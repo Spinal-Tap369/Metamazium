@@ -43,7 +43,7 @@ class SNAILAgent(nn.Module):
         self.num_actions = num_actions
         self.buffer = deque(maxlen=self.seq_length)
 
-        self.device = torch.device("cpu")
+        self.device = torch.device("cuda")
 
     def to(self, device):
         super().to(device)

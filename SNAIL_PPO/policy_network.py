@@ -16,9 +16,8 @@ class SNAILPolicy(ch.nn.Policy):
     def __init__(self, snail_agent, num_actions):
         super(SNAILPolicy, self).__init__()
         self.snail_agent = snail_agent
-        # Assuming SNAILAgent has an attribute 'feature_dim'
         self.actor = torch.nn.Linear(self.snail_agent.feature_dim, num_actions)
-        # Initialize weights (optional)
+        # Initialize weights 
         torch.nn.init.orthogonal_(self.actor.weight, gain=np.sqrt(2))
         torch.nn.init.constant_(self.actor.bias, 0)
         logger.info("Initialized SNAILPolicy network.")

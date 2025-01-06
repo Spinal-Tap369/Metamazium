@@ -4,14 +4,13 @@ import gymnasium as gym
 import json
 import random
 import sys
-import time  # For controlling rendering frequency
-import pygame  # Import pygame for event handling
+import time 
+import pygame  
 
-# Import MazeTaskManager and MazeTaskSampler from your project
 from env.maze_task import MazeTaskManager, MazeTaskSampler
-from gymnasium.wrappers import FrameStackObservation  # Updated import
+from gymnasium.wrappers import FrameStackObservation  
 
-# **Define DISCRETE_ACTIONS**
+
 DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # Left, Right, Down, Up
 
 def load_tasks(file_path):
@@ -45,8 +44,8 @@ def main():
     test_small_tasks_path = "mazes_data/test_small_tasks.json"
     test_large_tasks_path = "mazes_data/test_large_tasks.json"
     
-    # Choose which set to use: 'train', 'test_small', 'test_large'
-    task_set = "train"  # Change as needed: 'train', 'test_small', 'test_large'
+   
+    task_set = "train"  
     
     if task_set == "train":
         tasks = load_tasks(train_tasks_path)
@@ -67,15 +66,15 @@ def main():
     except TypeError as e:
         print(f"Error sampling TaskConfig: {e}")
         print("Available parameters in the task configuration:", list(random_task_params.keys()))
-        # List expected parameters for clarity
+        # List expected parameters
         print("Expected parameters: n, allow_loops, crowd_ratio, cell_size, wall_height, agent_height, "
               "step_reward, goal_reward, initial_life, max_life, food_density, food_interval")
         sys.exit(1)
     
-    # Initialize the environment for "ESCAPE" tasks
-    env_id = "MetaMazeDiscrete3D-v0"  # Ensure this matches your environment registration
+    # Initialize the environment
+    env_id = "MetaMazeDiscrete3D-v0"  
     
-    # Create the environment using its registered ID
+   
     try:
         env = gym.make(env_id)
     except gym.error.UnregisteredEnv:
@@ -86,16 +85,16 @@ def main():
         print(f"Unexpected error while creating the environment '{env_id}': {e}")
         sys.exit(1)
     
-    # **Retrieve the base observation space shape before wrapping**
+   
     base_obs_shape = env.observation_space.shape
     print(f"Base observation space shape: {base_obs_shape}")
     
-    # Wrap the environment with FrameStackObservation
+   
     sequence_length = 4  # Number of consecutive observations to stack
     env = FrameStackObservation(env, stack_size=sequence_length)
     print(f"Environment wrapped with FrameStackObservation (sequence_length={sequence_length}).")
     
-    # **Define expected_shape based on the base observation shape**
+ 
     expected_shape = (sequence_length, ) + base_obs_shape
     print(f"Expected observation shape after stacking: {expected_shape}")
     
@@ -129,8 +128,8 @@ def main():
     phase_rewards = {1: 0.0, 2: 0.0}
     phase_collisions = {1: 0, 2: 0}
     phase_collision_penalties = {1: 0.0, 2: 0.0}
-    goal_reached_phase1 = False  # To track if the goal was reached in Phase 1
-    goal_reached_phase2 = False  # To track if the goal was reached in Phase 2
+    goal_reached_phase1 = False  
+    goal_reached_phase2 = False  
     
     # Initialize previous_phase to None
     previous_phase = None
@@ -139,7 +138,7 @@ def main():
     terminated = False
     truncated = False
     steps = 0
-    max_steps = 500  # Total steps for two phases (e.g., 250 + 250)
+    max_steps = 500  # Total steps for two phases 
     
     print("\nStarting the two-phase episode. Use arrow keys to control the agent. Press ESC to exit.\n")
     
@@ -164,7 +163,7 @@ def main():
             keys = pygame.key.get_pressed()
     
             # Map keyboard inputs to actions
-            action = None  # Default action is no movement
+            action = None  # Default 
             if keys[pygame.K_LEFT]:
                 action = 0  # Left
             elif keys[pygame.K_RIGHT]:
@@ -177,7 +176,7 @@ def main():
             if action is not None:
                 print(f"Keyboard Action: {DISCRETE_ACTIONS[action]}")
     
-                # Take a step in the environment
+                # Take a step
                 observation, reward, terminated, truncated, info = env.step(action)
     
                 # Extract current phase information
@@ -206,34 +205,20 @@ def main():
                     phase_collisions[current_phase] += 1
                     phase_collision_penalties[current_phase] += abs(collision_penalty)
                     print(f"Collision Detected at Step {steps + 1}: Penalty Applied = {collision_penalty}")
-                
-                # **NEW CODE: Check if the goal was reached in Phase 2**
-                if terminated and current_phase == 2:
-                    # Retrieve agent's current position
-                    agent_grid = info.get("agent_grid", None)
-                    goal = task_config.goal
-                    if agent_grid is not None and tuple(agent_grid) == goal:
-                        goal_reached_phase2 = True
-                        print("Goal reached in Phase 2.")
-                    else:
-                        print("Episode terminated without reaching the goal in Phase 2.")
     
-                # Log the step information, including agent's position
+                # debug
                 agent_grid = info.get("agent_grid", "Unknown")
                 print(f"Step {steps + 1}: Reward = {reward:.3f}, Terminated = {terminated}, "
                       f"Truncated = {truncated}, Collision = {collision}, Phase = {current_phase}, "
                       f"Agent Position = {agent_grid}")
                 
-                # **Verify the observation shape**
+                # Verify the observation shape
                 if observation.shape != expected_shape:
                     print(f"Error: Observation shape {observation.shape} does not match expected {expected_shape}.")
                     sys.exit(1)
                 else:
                     print(f"Observation Shape Verified: {observation.shape}")
                 
-                # Optionally, inspect the observation sequences
-                # Uncomment the following lines to print observation sequences
-                # print(f"Observation Sequence:\n{observation}")
     
                 # Render the environment
                 env.render()
@@ -241,8 +226,8 @@ def main():
                 # Increment step count after taking the step
                 steps += 1
     
-                # Optional: Control rendering frequency to prevent high CPU usage
-                time.sleep(0.05)  # Sleep for 50 milliseconds (~20 FPS)
+                
+                time.sleep(0.05) 
             else:
                 # If no key is pressed, still render and wait
                 env.render()
@@ -274,14 +259,6 @@ def main():
     print(f"Overall Collision Penalties: {phase_collision_penalties[1] + phase_collision_penalties[2]:.3f}")
     print(f"Overall Collisions: {phase_collisions[1] + phase_collisions[2]}")
     
-    # Save the trajectory (optional)
-    # Uncomment the following lines if you want to save the trajectory
-    # try:
-    #     env.save_trajectory("test_maze_discrete3d_trajectory.png")
-    # except Exception as e:
-    #     print(f"Error saving trajectory: {e}")
-    
-    # Close the environment
     try:
         env.close()
     except Exception as e:

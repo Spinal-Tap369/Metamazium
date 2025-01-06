@@ -4,9 +4,9 @@ import gymnasium as gym
 import json
 import random
 import sys
-import time  # For controlling rendering frequency
+import time  
 
-# Import MazeTaskManager and MazeTaskSampler from your project
+
 from env.maze_task import MazeTaskManager, MazeTaskSampler
 
 class RandomAgent:
@@ -41,13 +41,12 @@ def load_tasks(file_path):
         sys.exit(1)
 
 def main():
-    # Paths to the tasks JSON files
     train_tasks_path = "mazes_data/train_tasks.json"
     test_small_tasks_path = "mazes_data/test_small_tasks.json"
     test_large_tasks_path = "mazes_data/test_large_tasks.json"
     
-    # Choose which set to use: 'train', 'test_small', 'test_large'
-    task_set = "train"  # Change as needed: 'train', 'test_small', 'test_large'
+   
+    task_set = "train" 
     
     if task_set == "train":
         tasks = load_tasks(train_tasks_path)
@@ -73,10 +72,9 @@ def main():
               "step_reward, goal_reward, initial_life, max_life, food_density, food_interval")
         sys.exit(1)
     
-    # Initialize the environment for "ESCAPE" tasks
-    env_id = "MetaMazeDiscrete3D-v0"  # Ensure this matches your environment registration
+    # Initialize the environment
+    env_id = "MetaMazeDiscrete3D-v0"  
     
-    # Create the environment using its registered ID
     try:
         env = gym.make(env_id)
     except gym.error.UnregisteredEnv:
@@ -213,14 +211,7 @@ def main():
     print(f"Overall Collision Penalties: {phase_collision_penalties[1] + phase_collision_penalties[2]:.3f}")
     print(f"Overall Collisions: {phase_collisions[1] + phase_collisions[2]}")
 
-    # Save the trajectory (optional)
-    # Uncomment the following lines if you want to save the trajectory
-    # try:
-    #     env.save_trajectory("test_maze_discrete3d_trajectory.png")
-    # except Exception as e:
-    #     print(f"Error saving trajectory: {e}")
-
-    # Close the environment
+  
     try:
         env.close()
     except Exception as e:
