@@ -6,29 +6,32 @@ import torch.nn.functional as F
 
 class CNNEncoder(nn.Module):
     """
-    CNN encoder for a (3 x 30 x 40) first-person maze observation (as in SNAIL paper).
-    This is similar to the Duan et al. approach: two 5x5 conv layers with stride=2, 16 filters, ReLU.
-    Then flatten and project to a 256-dim feature vector.
-    If your environment observations differ (e.g. 3 x 40 x 30, or bigger),
-    adjust the final shape accordingly.
+    CNN encoder for a first-person maze observation (3 x 30 x 40).
+    Uses two 5x5 convolutional layers with stride 2 and 16 filters,
+    followed by a fully connected layer to project to a 256-dimensional feature vector.
+    Adjust dimensions if the input observation shape changes.
     """
     def __init__(self):
         super().__init__()
-        # You can tweak filter counts if you want it "smaller or bigger"
+        # First convolutional layer: input channels = 3, output channels = 16
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=5, stride=2)
+        # Second convolutional layer: input channels = 16, output channels = 16
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=16, kernel_size=5, stride=2)
         
-        # After two stride=2 convs on 30x40, shape is roughly (16, 6, 8) => ~768 dims
-        # We'll map that to 256
+        # After two conv layers on a 30x40 input, the feature map size ~ (16, 5, 7)
+        # Flattened size ~ 16*5*7 = 560; project to 256-dim feature vector
         self.fc = nn.Linear(16 * 5 * 7, 256)
 
     def forward(self, obs):
         """
-        obs shape: (batch, 3, 30, 40)
-        Returns: (batch, 256)
+        Forward pass of the CNN encoder.
+        Args:
+            obs (Tensor): Batch of observations with shape (batch_size, 3, 30, 40).
+        Returns:
+            Tensor: Encoded features with shape (batch_size, 256).
         """
         x = F.relu(self.conv1(obs))
         x = F.relu(self.conv2(x))
-        x = x.view(x.size(0), -1)  # flatten
+        x = x.view(x.size(0), -1)  # flatten feature maps
         x = F.relu(self.fc(x))
         return x
