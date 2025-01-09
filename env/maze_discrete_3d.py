@@ -1,4 +1,4 @@
-# env\maze_discrete3d.py
+# env/maze_discrete3d.py
 
 import numpy as np
 import pygame
@@ -18,17 +18,18 @@ class MazeCoreDiscrete3D(MazeBase):
     Core logic for the discrete 3D maze environment.
     Handles agent movement, phase transitions, and reward calculations.
     """
+
     def __init__(
             self,
-            collision_dist=0.20,          # Collision distance (not used in discrete)
-            max_vision_range=12.0,        # Agent's vision range
-            fol_angle=0.6 * np.pi,        # Field of View angle
-            resolution_horizon=320,       # Horizontal resolution
-            resolution_vertical=320,      # Vertical resolution
-            max_steps=5000,               # Maximum steps per episode
-            task_type="ESCAPE",           # Task type: "SURVIVAL" or "ESCAPE"
-            phase_step_limit=250,         # Steps allocated per phase
-            collision_penalty=-0.001      # Collision penalty
+            collision_dist=0.20,          
+            max_vision_range=12.0,        
+            fol_angle=0.6 * np.pi,        
+            resolution_horizon=320,       
+            resolution_vertical=320,      
+            max_steps=5000,              
+            task_type="ESCAPE",          
+            phase_step_limit=250,        
+            collision_penalty=-0.001     
         ):
         super(MazeCoreDiscrete3D, self).__init__(
                 collision_dist=collision_dist,
@@ -38,184 +39,187 @@ class MazeCoreDiscrete3D(MazeBase):
                 resolution_vertical=resolution_vertical,
                 task_type=task_type,
                 max_steps=max_steps,
-                phase_step_limit=phase_step_limit  # Pass to MazeBase
-                )
-        # Initialize tracking variables
-        self._starting_position = None
-        self._phase_rewards = {1: 0.0, 2: 0.0}
-
-        # Initialize orientation attributes
-        self._agent_ori_choice = [0, np.pi / 2, np.pi, 3 * np.pi / 2]  # East, North, West, South
-        self._agent_ori_index = 0  # Start facing East
+                phase_step_limit=phase_step_limit
+        )
+        # Orientation
+        self._agent_ori_choice = [0, np.pi / 2, np.pi, 3 * np.pi / 2]
+        self._agent_ori_index = 0
         self._agent_ori = self._agent_ori_choice[self._agent_ori_index]
 
-        # Store collision penalty
-        self.collision_penalty = collision_penalty
+        self.collision_penalty = collision_penalty  # negative collision penalty
+
+        # Keep track of total reward in each phase (optional):
+        self._phase_rewards = {1: 0.0, 2: 0.0}
+
+        # Per-phase metrics:
+        self.phase_metrics = {
+            1: {"goal_rewards": 0.0, "steps": 0, "step_rewards": 0.0,
+                "collisions": 0, "collision_rewards": 0.0},
+            2: {"goal_rewards": 0.0, "steps": 0, "step_rewards": 0.0,
+                "collisions": 0, "collision_rewards": 0.0}
+        }
 
     def reset(self):
-        """
-        Resets the environment to the initial state.
-        """
-        # Call the base class reset method
         observation = super(MazeCoreDiscrete3D, self).reset()
 
-        # Store the starting position for teleportation
+        # Store starting position for possible teleportation
         self._starting_position = deepcopy(self._agent_grid)
 
-        # Reset phase rewards
         self._phase_rewards = {1: 0.0, 2: 0.0}
 
-        # Reset agent orientation
-        self._agent_ori_index = 0  # Reset to initial orientation
+        # Reset orientation
+        self._agent_ori_index = 0
         self._agent_ori = self._agent_ori_choice[self._agent_ori_index]
+
+        # Reset phase metrics each episode
+        self.phase_metrics = {
+            1: {"goal_rewards": 0.0, "steps": 0, "step_rewards": 0.0,
+                "collisions": 0, "collision_rewards": 0.0},
+            2: {"goal_rewards": 0.0, "steps": 0, "step_rewards": 0.0,
+                "collisions": 0, "collision_rewards": 0.0}
+        }
 
         return observation
 
     def do_action(self, action):
         """
-        Performs an action by the agent: turning and moving.
-
-        Args:
-            action (int): The action index (0: Left, 1: Right, 2: Down, 3: Up)
-
-        Returns:
-            tuple: (reward, done, collision)
+        action is a tuple: (turn_dir, step)
         """
-        assert isinstance(action, tuple) and len(action) == 2, "Action must be a tuple of (turn_direction, move_step)"
-        assert abs(action[0]) < 2 and abs(action[1]) < 2, "Invalid action values"
-
+        assert isinstance(action, tuple) and len(action) == 2
         direction, step = action
 
+        # Turn + Move
         self.turn(direction)
-        previous_grid = deepcopy(self._agent_grid)
+        old_grid = deepcopy(self._agent_grid)
         self.move(step)
 
-        # Collision occurs if the agent did not move despite attempting to move
-        collision = np.array_equal(previous_grid, self._agent_grid)
+        # Collision if agent_grid unchanged
+        collision = np.array_equal(old_grid, self._agent_grid)
 
-        # Increment phase step counter
-        self.current_phase_steps += 1  # Increment the step count for the current phase
+        # Increase phase step count
+        self.phase_metrics[self.phase]["steps"] += 1
+        self.current_phase_steps += 1
 
-        # Perform evaluation to get reward and done flag
+        # Evaluate reward
         reward, done = self.evaluation_rule()
 
-        # Apply collision penalty
+        # If collision, apply penalty
         if collision:
-            reward += self.collision_penalty  # Note: collision_penalty is negative
+            reward += self.collision_penalty
+            self.phase_metrics[self.phase]["collisions"] += 1
+            self.phase_metrics[self.phase]["collision_rewards"] += self.collision_penalty
 
-        # Accumulate reward for the current phase
+        # Add to the per-phase total reward if desired
         self._phase_rewards[self.phase] += reward
 
-        # Check if agent has reached the goal
-        agent_at_goal = tuple(self._agent_grid) == self._goal
+        # Check if agent_at_goal
+        agent_at_goal = (tuple(self._agent_grid) == self._goal)
 
         if self.task_type == "ESCAPE":
             if agent_at_goal:
                 if self.phase == 1:
-                    # Transition to phase2
-                    # Switch to phase2
+                    # Switch to phase 2
                     self.phase = 2
                     self.current_phase_steps = 0
-
-                    # Teleport agent back to starting position
+                    # Teleport agent back to start
                     self._agent_grid = deepcopy(self._starting_position)
                     self._agent_loc = self.get_cell_center(self._agent_grid)
-
-                    # Update observation after teleportation
+                    done = False  # continue episode
                     self.update_observation()
-                    done = False  # Continue the episode
-
+                    done = False
                 elif self.phase == 2:
-                    # Goal reached in phase2, terminate the episode
+                    # Reached goal in phase 2 => done
                     done = True
 
-        # Check if phase_step_limit is reached
+        # Check phase step limit
         if self.phase == 1 and self.current_phase_steps >= self.phase_step_limit:
-            # Transition to phase2
             self.phase = 2
             self.current_phase_steps = 0
-
-            # Teleport agent back to starting position
             self._agent_grid = deepcopy(self._starting_position)
             self._agent_loc = self.get_cell_center(self._agent_grid)
-
-            # Update observation after teleportation
+            done = False
             self.update_observation()
-
         elif self.phase == 2 and self.current_phase_steps >= self.phase_step_limit:
-            # Terminate the episode after phase2 step limit
             done = True
 
-        # Update observation after the action
+        # Finally update observation after movement
         self.update_observation()
+        return reward, done, collision
 
-        return reward, done, collision  # Return collision flag
+    def evaluation_rule(self):
+        """
+        Tied to step-based reward & goal reward. Also track in phase_metrics.
+        """
+        self.steps += 1
+        self._agent_trajectory.append(np.copy(self._agent_grid))
+
+        # Check if agent at goal
+        agent_at_goal = (tuple(self._goal) == tuple(self._agent_grid))
+
+        if self.task_type == "ESCAPE":
+            if self.phase == 1:
+                # step_reward is negative => add to step_rewards
+                self.phase_metrics[1]["step_rewards"] += self._step_reward
+                reward = self._step_reward
+                done = False
+            elif self.phase == 2:
+                # In phase 2, if agent_at_goal => get goal reward
+                # Also add negative step_reward
+                step_r = self._step_reward
+                self.phase_metrics[2]["step_rewards"] += step_r
+                if agent_at_goal:
+                    # agent gets goal reward
+                    self.phase_metrics[2]["goal_rewards"] += self._goal_reward
+                    reward = step_r + self._goal_reward
+                else:
+                    reward = step_r
+                done = agent_at_goal or self.episode_is_over()
+        else:
+            # If SURVIVAL or other tasks, you'd do similarly
+            reward = 0.0
+            done = False
+
+        return reward, done
 
     def turn(self, direction):
-        """
-        Turns the agent based on the direction.
-
-        Args:
-            direction (int): -1 for left, 1 for right
-        """
         self._agent_ori_index += direction
-        self._agent_ori_index = self._agent_ori_index % len(self._agent_ori_choice)
+        self._agent_ori_index %= len(self._agent_ori_choice)
         self._agent_ori = self._agent_ori_choice[self._agent_ori_index]
 
     def move(self, step):
-        """
-        Moves the agent forward or backward based on the step.
-
-        Args:
-            step (int): -1 for backward, 1 for forward
-        """
         tmp_grid = deepcopy(self._agent_grid)
-
-        # Determine movement direction based on current orientation
         if self._agent_ori_index == 0:
-            tmp_grid[0] += step  # Move East
+            tmp_grid[0] += step
         elif self._agent_ori_index == 1:
-            tmp_grid[1] += step  # Move North
+            tmp_grid[1] += step
         elif self._agent_ori_index == 2:
-            tmp_grid[0] -= step  # Move West
+            tmp_grid[0] -= step
         elif self._agent_ori_index == 3:
-            tmp_grid[1] -= step  # Move South
-        else:
-            raise ValueError(f"Unexpected agent orientation index: {self._agent_ori_index}")
+            tmp_grid[1] -= step
 
-        # Check for wall collisions and grid boundaries
-        if (
-            0 <= tmp_grid[0] < self._n
-            and 0 <= tmp_grid[1] < self._n
-            and self._cell_walls[tmp_grid[0], tmp_grid[1]] == 0
-        ):
+        # If not blocked, update agent_grid
+        if (0 <= tmp_grid[0] < self._n and
+            0 <= tmp_grid[1] < self._n and
+            self._cell_walls[tmp_grid[0], tmp_grid[1]] == 0):
             self._agent_grid = tmp_grid
             self._agent_loc = self.get_cell_center(self._agent_grid)
-        else:
-            pass  # Move is blocked; agent stays in the same grid
 
     def render_init(self, view_size):
-        """
-        Initializes rendering parameters.
-        """
         super(MazeCoreDiscrete3D, self).render_init(view_size)
         self._pos_conversion = self._render_cell_size / self._cell_size
         self._ori_size = 0.60 * self._pos_conversion
 
     def render_observation(self):
-        """
-        Renders the agent and its orientation on the screen.
-        """
-        # Paint Observation
+        # Paint observation
+        import pygame
         view_obs_surf = pygame.transform.scale(self._obs_surf, (self._view_size, self._view_size))
         self._screen.blit(view_obs_surf, (0, 0))
 
-        # Paint God-view (Top-down view)
+        # Paint top-down view
         agent_pos = np.array(self._agent_loc) * self._pos_conversion
         dx = self._ori_size * np.cos(self._agent_ori)
         dy = self._ori_size * np.sin(self._agent_ori)
-        
-        # Convert coordinates to integers for rendering
+
         center_pos = (int(agent_pos[0] + self._view_size), int(self._view_size - agent_pos[1]))
         end_pos = (int(agent_pos[0] + self._view_size + dx), int(self._view_size - agent_pos[1] - dy))
         radius = int(0.15 * self._pos_conversion)
@@ -224,30 +228,17 @@ class MazeCoreDiscrete3D(MazeBase):
         pygame.draw.line(self._screen, pygame.Color("green"), center_pos, end_pos, width=1)
 
     def movement_control(self, keys):
-        """
-        Handles keyboard inputs for agent movement.
-
-        Args:
-            keys (pygame.key.ScancodeWrapper): Current state of keyboard keys.
-
-        Returns:
-            tuple: (turn_direction, move_step)
-        """
         if keys[pygame.K_LEFT]:
-            return (-1, 0)  # Turn left
+            return (-1, 0)
         if keys[pygame.K_RIGHT]:
-            return (1, 0)   # Turn right
+            return (1, 0)
         if keys[pygame.K_UP]:
-            return (0, 1)   # Move forward
+            return (0, 1)
         if keys[pygame.K_DOWN]:
-            return (0, -1)  # Move backward
-        return (0, 0)       # No action
+            return (0, -1)
+        return (0, 0)
 
     def update_observation(self):
-        """
-        Updates the current observation based on the agent's position.
-        This method uses maze_view to generate the observation.
-        """
         self._observation = maze_view(
             self._agent_loc,
             self._agent_ori,
@@ -267,23 +258,8 @@ class MazeCoreDiscrete3D(MazeBase):
             self.resolution_vertical
         )
 
-        if self.task_type == "SURVIVAL":
-            lifebar_l = self._life / self._max_life * self._lifebar_l
-            start_x = int(self._lifebar_start_x)
-            start_y = int(self._lifebar_start_y)
-            end_x = int(self._lifebar_start_x + lifebar_l)
-            end_y = int(self._lifebar_start_y + self._lifebar_w)
-            self._observation[start_x:end_x, start_y:end_y, 0] = 255  # Red channel
-            self._observation[start_x:end_x, start_y:end_y, 1] = 0    # Green channel
-            self._observation[start_x:end_x, start_y:end_y, 2] = 0    # Blue channel
         self._obs_surf = pygame.surfarray.make_surface(self._observation)
         self._observation = np.clip(self._observation, 0.0, 255.0).astype("float32")
 
     def get_observation(self):
-        """
-        Returns the current observation.
-
-        Returns:
-            numpy.ndarray: The current observation.
-        """
         return np.copy(self._observation)
