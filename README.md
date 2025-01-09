@@ -11,4 +11,4 @@ Using PPO instead of TRPO GAE as in the original paper
 - Update - Since implementing the architecture of SNAIL would mean having a time complexity of O(n)<sup>2</sup>, working on implementing a self attention mechanism which would theoretically have a linear time complexity. Created a LSTM model to serve as the base line and to test a ppo training loop.
 
 
-NOTE - The original metamaze https://github.com/PaddlePaddle/MetaGym/tree/master/metagym/metamaze uses Gym which is no longer supported. I've adapted the discrete 3d maze for gymnasium and it has some more changes to enable the agent to carry over memory across trials.
+NOTE - The original metamaze https://github.com/PaddlePaddle/MetaGym/tree/master/metagym/metamaze uses Gym which is no longer supported. I've adapted the discrete 3d maze for gymnasium and it has some more changes to enable the agent to carry over memory across a trial.
