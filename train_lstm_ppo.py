@@ -45,7 +45,7 @@ def main():
         gae_lambda=gae_lambda,
         clip_range=clip_range,
         n_epochs=10,
-        batch_size=4,
+        batch_size=16,
         target_kl=target_kl,
         max_grad_norm=0.5,
         entropy_coef=0.0,
@@ -208,6 +208,8 @@ def main():
             timesteps_per_update += 20000
 
     env.close()
+    torch.save(policy.state_dict(), "models/lstm_policy.pt")
+    print("model saved")
     print(f"Finished training after {total_steps} steps and {episode_count} episodes.")
 
 if __name__ == "__main__":

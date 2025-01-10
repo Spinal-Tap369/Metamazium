@@ -3,3 +3,4 @@ mazium/
 mazes_data/
 test_envf.py
 train_lstm_ppo_debug.py
+models/
