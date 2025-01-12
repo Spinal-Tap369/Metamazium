@@ -19,7 +19,7 @@ class MetaMazeDiscrete3D(gym.Env):
             max_steps=5000,
             task_type="SURVIVAL",
             collision_penalty=-0.001,  # negative
-            phase_step_limit=250  
+            phase_step_limit=400 
             ):
 
         super(MetaMazeDiscrete3D, self).__init__()

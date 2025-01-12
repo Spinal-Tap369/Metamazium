@@ -102,8 +102,11 @@ class PPOTrainer:
                 batch_adv = advantages_t[batch_idx]
                 batch_returns = returns_t[batch_idx]
 
-                self.policy_model.reset_lstm_states(batch_size=len(batch_idx))
-                logits, v_pred = self.policy_model(batch_obs)
+                # Reset updating hidden state with batch_size=64
+                self.policy_model.reset_lstm_states(batch_size=len(batch_idx), mode='update')
+
+                # Forward pass using forward_update
+                logits, v_pred = self.policy_model(batch_obs, mode='update')
 
                 B_, seq_len, act_dim = logits.shape
                 logits_2d = logits.view(B_ * seq_len, act_dim)
