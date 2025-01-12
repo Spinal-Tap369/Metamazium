@@ -5,5 +5,3 @@ test_envf.py
 train_lstm_ppo_debug.py
 models/
 test_lstm_ppo_eval.py
-train_snail_performer.py
-snail_performer/
