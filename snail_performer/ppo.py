@@ -8,11 +8,8 @@ import numpy as np
 
 class PPOTrainer:
     """
-    PPO trainer specifically for the SNAIL-Performer model (or any policy that
-    does not require 'mode' arguments). It does not call the policy with
-    mode='update', etc.
-
-    We handle entire sequences at once.
+    PPO trainer for sequence-based policies without mode-specific calls.
+    Processes entire sequences at once.
     """
     def __init__(self,
                  policy_model,
@@ -26,9 +23,24 @@ class PPOTrainer:
                  max_grad_norm=0.5,
                  entropy_coef=0.0,
                  value_coef=0.5):
+        """
+        Initializes the PPO trainer.
+
+        Args:
+            policy_model (nn.Module): Policy network to train.
+            lr (float): Learning rate.
+            gamma (float): Discount factor.
+            gae_lambda (float): GAE lambda for advantage estimation.
+            clip_range (float): PPO clipping range.
+            n_epochs (int): Number of training epochs.
+            batch_size (int): Mini-batch size.
+            target_kl (float): KL divergence threshold for early stopping.
+            max_grad_norm (float): Gradient clipping norm.
+            entropy_coef (float): Coefficient for entropy regularization.
+            value_coef (float): Coefficient for value function loss.
+        """
         self.policy_model = policy_model
         self.optimizer = optim.Adam(self.policy_model.parameters(), lr=lr)
-        
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.clip_range = clip_range
@@ -42,11 +54,15 @@ class PPOTrainer:
     def compute_gae(self, rewards, dones, values, next_value):
         """
         Computes Generalized Advantage Estimation (GAE).
+
         Args:
-            rewards, dones, values: numpy arrays of shape (T,)
-            next_value: float
+            rewards (np.array): Rewards sequence of shape (T,).
+            dones (np.array): Done flags of shape (T,).
+            values (np.array): Value predictions of shape (T,).
+            next_value (float): Value of the next state.
+
         Returns:
-            advantages: numpy array of shape (T,)
+            np.array: Computed advantages of shape (T,).
         """
         T = len(rewards)
         advantages = np.zeros(T, dtype=np.float32)
@@ -60,19 +76,22 @@ class PPOTrainer:
 
     def update(self, rollouts):
         """
-        Performs multi-epoch mini-batch PPO updates.
-        rollouts should have:
-          obs:       (N, T, 3, 30, 40)
-          actions:   (N, T)
-          old_log_probs: (N, T)
-          returns:   (N, T)
-          values:    (N, T)
-          advantages:(N, T)
+        Performs PPO updates using rollout data.
 
-        We do typical sequence-based PPO.
+        Args:
+            rollouts (dict): Contains:
+                - obs (np.array): Observations (N, T, 3, 30, 40).
+                - actions (np.array): Actions taken (N, T).
+                - old_log_probs (np.array): Log probabilities (N, T).
+                - returns (np.array): Discounted returns (N, T).
+                - values (np.array): Value predictions (N, T).
+                - advantages (np.array): Computed advantages (N, T).
+
+        Returns:
+            dict: Training metrics including KL divergence, loss, and entropy.
         """
-        obs = rollouts["obs"]          # shape (N, T, 3, 30, 40)
-        actions = rollouts["actions"]  # shape (N, T)
+        obs = rollouts["obs"]
+        actions = rollouts["actions"]
         old_log_probs = rollouts["old_log_probs"]
         returns_ = rollouts["returns"]
         values_ = rollouts["values"]
@@ -81,21 +100,18 @@ class PPOTrainer:
         N, T = actions.shape
         device = next(self.policy_model.parameters()).device
 
-        obs_t = torch.from_numpy(obs).float().to(device)             # (N, T, 3, 30, 40)
-        actions_t = torch.from_numpy(actions).long().to(device)      # (N, T)
+        obs_t = torch.from_numpy(obs).float().to(device)
+        actions_t = torch.from_numpy(actions).long().to(device)
         old_log_probs_t = torch.from_numpy(old_log_probs).float().to(device)
         returns_t = torch.from_numpy(returns_).float().to(device)
         values_t = torch.from_numpy(values_).float().to(device)
         advantages_t = torch.from_numpy(advantages_).float().to(device)
 
-        # Normalizing advantages
-        adv_mean = advantages_t.mean()
-        adv_std = advantages_t.std() + 1e-8
-        advantages_t = (advantages_t - adv_mean) / adv_std
+        # Normalize advantages
+        advantages_t = (advantages_t - advantages_t.mean()) / (advantages_t.std() + 1e-8)
 
         clipfracs = []
         final_approx_kl = 0.0
-
         indices = np.arange(N)
 
         for epoch_i in range(self.n_epochs):
@@ -106,17 +122,17 @@ class PPOTrainer:
                 batch_idx = indices[start_idx:end_idx]
                 start_idx = end_idx
 
-                batch_obs = obs_t[batch_idx]       # (B, T, 3, 30, 40)
-                batch_actions = actions_t[batch_idx]   # (B, T)
+                batch_obs = obs_t[batch_idx]
+                batch_actions = actions_t[batch_idx]
                 batch_old_logp = old_log_probs_t[batch_idx]
                 batch_adv = advantages_t[batch_idx]
                 batch_returns = returns_t[batch_idx]
 
-                # Reset policy states if needed (SNAIL is stateless => no-op)
+                # Reset states for stateless policies (no-op for SNAIL)
                 self.policy_model.reset_lstm_states(batch_size=len(batch_idx))
 
                 # Forward pass
-                logits, v_pred = self.policy_model(batch_obs)  # => (B,T, action_dim), (B,T)
+                logits, v_pred = self.policy_model(batch_obs)
                 B_, seq_len, act_dim = logits.shape
 
                 logits_2d = logits.view(B_ * seq_len, act_dim)
@@ -144,7 +160,7 @@ class PPOTrainer:
                 nn.utils.clip_grad_norm_(self.policy_model.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 
-                approx_kl = 0.5 * torch.mean((new_log_probs_1d - old_logp_1d)**2).cpu().item()
+                approx_kl = 0.5 * torch.mean((new_log_probs_1d - old_logp_1d) ** 2).cpu().item()
                 final_approx_kl = approx_kl
 
                 clip_frac = ((ratio > (1 + self.clip_range)) | (ratio < (1 - self.clip_range))).float().mean()

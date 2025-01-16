@@ -13,9 +13,8 @@ class CNNEncoder(nn.Module):
     """
     def __init__(self):
         super().__init__()
-        # First convolutional layer: input channels = 3, output channels = 16
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=5, stride=2)
-        # Second convolutional layer: input channels = 16, output channels = 16
+
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=16, kernel_size=5, stride=2)
         
         # After two conv layers on a 30x40 input, the feature map size ~ (16, 5, 7)

@@ -8,8 +8,7 @@ import numpy as np
 
 class PPOTrainer:
     """
-    PPO trainer for full-sequence LSTM forward passes,
-    aligning with the SNAIL paper approach for entire episodes.
+    PPO trainer for LSTM-based policies with memory persistence across episodes.
     """
     def __init__(self,
                  policy_model,
@@ -23,9 +22,24 @@ class PPOTrainer:
                  max_grad_norm=0.5,
                  entropy_coef=0.0,
                  value_coef=0.5):
+        """
+        Initializes the PPO trainer.
+
+        Args:
+            policy_model (nn.Module): The policy network to train.
+            lr (float): Learning rate.
+            gamma (float): Discount factor.
+            gae_lambda (float): GAE lambda for advantage estimation.
+            clip_range (float): PPO clipping range.
+            n_epochs (int): Number of training epochs.
+            batch_size (int): Batch size for updates.
+            target_kl (float): Target KL divergence for early stopping.
+            max_grad_norm (float): Gradient clipping norm.
+            entropy_coef (float): Coefficient for entropy loss.
+            value_coef (float): Coefficient for value loss.
+        """
         self.policy_model = policy_model
         self.optimizer = optim.Adam(self.policy_model.parameters(), lr=lr)
-        
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.clip_range = clip_range
@@ -39,28 +53,41 @@ class PPOTrainer:
     def compute_gae(self, rewards, dones, values, next_value):
         """
         Computes Generalized Advantage Estimation (GAE).
+
         Args:
-            rewards, dones, values: arrays of shape (T,)
-            next_value: float
+            rewards (np.array): Rewards for the sequence.
+            dones (np.array): Done flags for the sequence.
+            values (np.array): Value predictions.
+            next_value (float): Value of the next state.
+
         Returns:
-            advantages: array of shape (T,)
+            np.array: Advantage estimates for the sequence.
         """
         T = len(rewards)
         advantages = np.zeros(T, dtype=np.float32)
         gae = 0.0
         for t in reversed(range(T)):
-            delta = rewards[t] + self.gamma * (1.0 - dones[t]) * next_value - values[t]
-            gae = delta + self.gamma * self.gae_lambda * (1.0 - dones[t]) * gae
+            delta = rewards[t] + self.gamma * (1 - dones[t]) * next_value - values[t]
+            gae = delta + self.gamma * self.gae_lambda * (1 - dones[t]) * gae
             advantages[t] = gae
             next_value = values[t]
         return advantages
 
     def update(self, rollouts):
         """
-        Performs multi-epoch mini-batch PPO updates.
-        Expects rollouts dict containing sequences with shapes:
-            obs: (N, T, 3, 30, 40), actions: (N, T), old_log_probs: (N, T),
-            returns: (N, T), values: (N, T), advantages: (N, T)
+        Performs a PPO update using stored rollouts.
+
+        Args:
+            rollouts (dict): Rollout data with keys:
+                - obs: Observations (N, T, 3, 30, 40)
+                - actions: Actions taken (N, T)
+                - old_log_probs: Log probabilities of actions (N, T)
+                - returns: Discounted returns (N, T)
+                - values: Value predictions (N, T)
+                - advantages: Advantage estimates (N, T)
+        
+        Returns:
+            dict: Training metrics including loss, KL divergence, and entropy.
         """
         obs = rollouts["obs"]
         actions = rollouts["actions"]
@@ -70,7 +97,6 @@ class PPOTrainer:
         advantages_ = rollouts["advantages"]
 
         N, T = actions.shape
-
         device = next(self.policy_model.parameters()).device
         obs_t = torch.from_numpy(obs).float().to(device)
         actions_t = torch.from_numpy(actions).long().to(device)
@@ -79,14 +105,12 @@ class PPOTrainer:
         values_t = torch.from_numpy(values_).float().to(device)
         advantages_t = torch.from_numpy(advantages_).float().to(device)
 
-        advantages_mean = advantages_t.mean()
-        advantages_std = advantages_t.std() + 1e-8
-        advantages_t = (advantages_t - advantages_mean) / advantages_std
-
-        clipfracs = []
-        final_approx_kl = 0.0
+        # Normalize advantages
+        advantages_t = (advantages_t - advantages_t.mean()) / (advantages_t.std() + 1e-8)
 
         indices = np.arange(N)
+        clipfracs = []
+        final_approx_kl = 0.0
 
         for epoch_i in range(self.n_epochs):
             np.random.shuffle(indices)
@@ -96,17 +120,15 @@ class PPOTrainer:
                 batch_idx = indices[start_idx:end_idx]
                 start_idx = end_idx
 
+                self.policy_model.reset_memory()
+
                 batch_obs = obs_t[batch_idx]
                 batch_actions = actions_t[batch_idx]
                 batch_old_logp = old_log_probs_t[batch_idx]
                 batch_adv = advantages_t[batch_idx]
                 batch_returns = returns_t[batch_idx]
 
-                # Reset updating hidden state with batch_size=64
-                self.policy_model.reset_lstm_states(batch_size=len(batch_idx), mode='update')
-
-                # Forward pass using forward_update
-                logits, v_pred = self.policy_model(batch_obs, mode='update')
+                logits, v_pred = self.policy_model(batch_obs)
 
                 B_, seq_len, act_dim = logits.shape
                 logits_2d = logits.view(B_ * seq_len, act_dim)
@@ -133,14 +155,14 @@ class PPOTrainer:
                 nn.utils.clip_grad_norm_(self.policy_model.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 
-                approx_kl = 0.5 * torch.mean((new_log_probs_1d - old_logp_1d)**2).cpu().item()
+                approx_kl = 0.5 * torch.mean((new_log_probs_1d - old_logp_1d) ** 2).cpu().item()
                 final_approx_kl = approx_kl
 
                 clip_frac = ((ratio > (1 + self.clip_range)) | (ratio < (1 - self.clip_range))).float().mean()
                 clipfracs.append(clip_frac.item())
 
                 if approx_kl > self.target_kl:
-                    print(f"Early stopping at epoch={epoch_i} due to KL={approx_kl:.4f} > {self.target_kl}")
+                    print(f"Early stopping at epoch {epoch_i} due to KL divergence {approx_kl:.4f} > {self.target_kl}")
                     break
 
             if final_approx_kl > self.target_kl:

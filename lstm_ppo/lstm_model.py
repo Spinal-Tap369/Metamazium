@@ -6,16 +6,13 @@ import torch.nn.functional as F
 from .cnn_encoder import CNNEncoder
 
 class LSTMPolicy(nn.Module):
-    """
-    LSTM-based policy:
-      1) Encodes observations with a CNN
-      2) Processes embeddings through an LSTM
-      3) Outputs policy logits and value estimates
-    """
     def __init__(self, action_dim=4, hidden_size=512):
         """
-        action_dim: Number of discrete actions.
-        hidden_size: LSTM hidden size.
+        Initializes the LSTM-based policy model.
+        
+        Args:
+            action_dim (int): Number of possible actions.
+            hidden_size (int): Hidden size of the LSTM.
         """
         super().__init__()
         self.cnn_encoder = CNNEncoder()
@@ -23,62 +20,55 @@ class LSTMPolicy(nn.Module):
         self.lstm = nn.LSTM(input_size=256, hidden_size=hidden_size, batch_first=True)
         self.policy_head = nn.Linear(hidden_size, action_dim)
         self.value_head = nn.Linear(hidden_size, 1)
-        self.reset_lstm_states(mode='act')  # Initialize acting hidden state
-        self.reset_lstm_states(mode='update')  # Initialize updating hidden state
 
-    def reset_lstm_states(self, batch_size=1, mode='act'):
-        """Reset LSTM hidden states for acting or updating."""
-        device = next(self.parameters()).device
-        h0 = torch.zeros(1, batch_size, self.hidden_size, device=device)
-        c0 = torch.zeros(1, batch_size, self.hidden_size, device=device)
-        if mode == 'act':
-            self.lstm_hidden_act = (h0, c0)
-        elif mode == 'update':
-            self.lstm_hidden_update = (h0, c0)
-        else:
-            raise ValueError("Mode must be either 'act' or 'update'.")
+        self._h = None
+        self._c = None
 
-    def forward_act(self, obs_seq):
+    def reset_memory(self, batch_size=1, device=None):
         """
-        Forward pass for acting steps.
+        Resets LSTM hidden and cell states.
+
+        Args:
+            batch_size (int): Batch size for the LSTM states.
+            device (torch.device, optional): Device to initialize the states on.
+        """
+        if device is None:
+            device = next(self.parameters()).device
+
+        self._h = torch.zeros(1, batch_size, self.hidden_size, device=device)
+        self._c = torch.zeros(1, batch_size, self.hidden_size, device=device)
+
+    def forward(self, obs_seq):
+        """
+        Processes a sequence of observations through the model.
+
+        Args:
+            obs_seq (torch.Tensor): Input tensor of shape (B, T, 3, 30, 40).
+        
+        Returns:
+            tuple: Policy logits (B, T, action_dim) and value estimates (B, T).
         """
         B, T, C, H, W = obs_seq.shape
-        obs_reshaped = obs_seq.view(B * T, C, H, W)
-        feats = self.cnn_encoder(obs_reshaped).view(B, T, -1)
-        lstm_out, self.lstm_hidden_act = self.lstm(feats, self.lstm_hidden_act)
-        policy_logits = self.policy_head(lstm_out)
-        values = self.value_head(lstm_out).squeeze(-1)
+        x = obs_seq.view(B * T, C, H, W)
+        feats = self.cnn_encoder(x)  # => (B*T, 256)
+        feats = feats.view(B, T, -1)  # => (B, T, 256)
+
+        lstm_out, (self._h, self._c) = self.lstm(feats, (self._h, self._c))
+        policy_logits = self.policy_head(lstm_out)     # (B, T, action_dim)
+        values = self.value_head(lstm_out).squeeze(-1) # (B, T)
         return policy_logits, values
 
-    def forward_update(self, obs_seq):
-        """
-        Forward pass for PPO update steps.
-        """
-        B, T, C, H, W = obs_seq.shape
-        obs_reshaped = obs_seq.view(B * T, C, H, W)
-        feats = self.cnn_encoder(obs_reshaped).view(B, T, -1)
-        lstm_out, self.lstm_hidden_update = self.lstm(feats, self.lstm_hidden_update)
-        policy_logits = self.policy_head(lstm_out)
-        values = self.value_head(lstm_out).squeeze(-1)
-        return policy_logits, values
-
-    def forward(self, obs_seq, mode='act'):
-        """
-        General forward method to handle different modes.
-        """
-        if mode == 'act':
-            return self.forward_act(obs_seq)
-        elif mode == 'update':
-            return self.forward_update(obs_seq)
-        else:
-            raise ValueError("Mode must be either 'act' or 'update'.")
-
+    @torch.no_grad()
     def act_single_step(self, obs_single):
         """
-        Process a single observation step.
-        obs_single shape: (3, 30, 40)
+        Performs a single step action for the environment.
+
+        Args:
+            obs_single (torch.Tensor): Input tensor of shape (3, 30, 40).
+        
+        Returns:
+            tuple: Logits (1, action_dim) and value (1).
         """
-        obs_single = obs_single.unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, 3, 30, 40)
-        with torch.no_grad():
-            policy_logits, values = self.forward(obs_single, mode='act')
-        return policy_logits[:, -1, :], values[:, -1]
+        obs_single = obs_single.unsqueeze(0).unsqueeze(0)
+        logits, vals = self.forward(obs_single)  # => shapes (1, 1, action_dim), (1, 1)
+        return logits[:, -1, :], vals[:, -1]

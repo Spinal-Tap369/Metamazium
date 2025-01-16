@@ -6,31 +6,30 @@ import torch
 import json
 import sys
 
-import env  # Ensure environment is registered
+import env  # Custom environment module
 from snail_performer.performer_model import SNAILPerformerPolicy
-from snail_performer.ppo import PPOTrainer  # Use updated PPO trainer
-from env.maze_task import MazeTaskSampler  # For generating MazeTask configurations
+from snail_performer.ppo import PPOTrainer
+from env.maze_task import MazeTaskSampler
 
 def main():
+    # Initialize the environment
     env_id = "MetaMazeDiscrete3D-v0"
     env = gym.make(env_id, enable_render=False)
 
-    # Load training tasks from JSON file
+    # Load maze tasks from the JSON file
     tasks_file = "mazes_data/train_tasks.json"
     with open(tasks_file, "r") as f:
         tasks = json.load(f)
     num_tasks = len(tasks)
     print(f"Loaded {num_tasks} tasks from {tasks_file}")
 
-    # Hyperparameters
-    total_timesteps = 500000
-    timesteps_per_update = 100000
+    # Hyperparameters for training
+    total_timesteps = 5000000 
+    timesteps_per_update = 50000
     gamma = 0.99
     gae_lambda = 0.99
     clip_range = 0.2
     target_kl = 0.03
-    episodes_per_task = 5
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Initialize policy and PPO trainer
@@ -47,191 +46,139 @@ def main():
 
     ppo_trainer = PPOTrainer(
         policy_model=policy,
-        lr=1e-5,
+        lr=0.00001,
         gamma=gamma,
         gae_lambda=gae_lambda,
         clip_range=clip_range,
         n_epochs=5,
-        batch_size=64,
+        batch_size=8,        # Mini-batch size
         target_kl=target_kl,
         max_grad_norm=0.3,
         entropy_coef=0.01,
         value_coef=0.5
     )
 
+    # Training loop variables
     total_steps = 0
     episode_count = 0
-
-    # Buffers for episode data
-    all_obs = []
-    all_actions = []
-    all_log_probs = []
-    all_values = []
-    all_rewards = []
-    all_dones = []
-
     task_idx = 0
 
+    # Buffers for collecting sequence data
+    seq_obs, seq_actions, seq_log_probs = [], [], []
+    seq_values, seq_rewards, seq_dones = [], [], []
+
     while total_steps < total_timesteps:
-        # Set current maze task
+        # Load and set the next maze task
         this_task_params = tasks[task_idx]
         task_config = MazeTaskSampler(**this_task_params)
         env.unwrapped.set_task(task_config)
-        print(f"Starting new task {task_idx+1}/{num_tasks}")
+        print(f"Starting task {task_idx+1}/{num_tasks}")
 
-        # Run multiple episodes for current task
-        for ep in range(episodes_per_task):
+        steps_collected = 0
+        while steps_collected < timesteps_per_update:
+            # Reset environment for a new episode
             obs_raw, info = env.reset()
-            print(f"Episode {episode_count+1} on task {task_idx+1}")
-
             done = False
             truncated = False
 
-            step_list_obs = []
-            step_list_actions = []
-            step_list_logp = []
-            step_list_values = []
-            step_list_rewards = []
-            step_list_dones = []
-
             while not done and not truncated:
-                # Process observation for model input
-                obs_for_model = np.transpose(obs_raw, (2, 0, 1))  # (3, 30, 40)
+                # Preprocess observation for the policy
+                obs_for_model = np.transpose(obs_raw, (2, 0, 1))  # (3,30,40)
                 obs_torch = torch.from_numpy(obs_for_model).float().to(device)
 
-                # Compute action and value
+                # Get action and value prediction from the policy
                 with torch.no_grad():
                     logits, value = policy.act_single_step(obs_torch)
 
+                # Sample action from the policy distribution
                 dist = torch.distributions.Categorical(logits=logits)
                 action = dist.sample()
                 logp = dist.log_prob(action)
 
-                # Execute action in environment
+                # Step in the environment
                 obs_next_raw, reward, done, truncated, info = env.step(action.item())
-                total_steps += 1
 
-                # Store step data
-                step_list_obs.append(obs_for_model)
-                step_list_actions.append(action.item())
-                step_list_logp.append(logp.item())
-                step_list_values.append(value.item())
-                step_list_rewards.append(reward)
-                step_list_dones.append(float(done))
+                # Update counters and store rollout data
+                total_steps += 1
+                steps_collected += 1
+
+                seq_obs.append(obs_for_model)
+                seq_actions.append(action.item())
+                seq_log_probs.append(logp.item())
+                seq_values.append(value.item())
+                seq_rewards.append(reward)
+                seq_dones.append(float(done))
 
                 obs_raw = obs_next_raw
 
+                # Exit if task collection limit is reached
+                if steps_collected >= timesteps_per_update:
+                    break
+
             episode_count += 1
+            if steps_collected >= timesteps_per_update:
+                break
 
-            # Estimate next value if episode not finished
-            next_value = 0.0
-            if not done:
-                obs_for_model = np.transpose(obs_raw, (2, 0, 1))
-                obs_torch = torch.from_numpy(obs_for_model).float().to(device)
-                with torch.no_grad():
-                    _, val_ = policy.act_single_step(obs_torch)
-                next_value = val_.item()
+        # Calculate sequence length and prepare for PPO update
+        T = len(seq_obs)
+        print(f"Collected {T} transitions. Updating PPO...")
 
-            rewards_np = np.array(step_list_rewards, dtype=np.float32)
-            dones_np = np.array(step_list_dones, dtype=np.float32)
-            values_np = np.array(step_list_values, dtype=np.float32)
+        # Estimate next value for incomplete episodes
+        next_value = 0.0
+        if not done:
+            obs_for_model = np.transpose(obs_raw, (2, 0, 1))
+            obs_torch = torch.from_numpy(obs_for_model).float().to(device)
+            with torch.no_grad():
+                _, val_ = policy.act_single_step(obs_torch)
+            next_value = val_.item()
 
-            advantages_np = ppo_trainer.compute_gae(
-                rewards=rewards_np,
-                dones=dones_np,
-                values=values_np,
-                next_value=next_value
-            )
-            returns_np = values_np + advantages_np
+        # Convert collected data to numpy arrays
+        rewards_np = np.array(seq_rewards, dtype=np.float32)
+        dones_np = np.array(seq_dones, dtype=np.float32)
+        values_np = np.array(seq_values, dtype=np.float32)
 
-            all_obs.append(np.array(step_list_obs, dtype=np.float32))
-            all_actions.append(np.array(step_list_actions, dtype=np.int64))
-            all_log_probs.append(np.array(step_list_logp, dtype=np.float32))
-            all_values.append(values_np)
-            all_rewards.append(rewards_np)
-            all_dones.append(dones_np)
+        # Compute advantages and returns using GAE
+        advantages_np = ppo_trainer.compute_gae(
+            rewards=rewards_np,
+            dones=dones_np,
+            values=values_np,
+            next_value=next_value
+        )
+        returns_np = values_np + advantages_np
 
-            # Update policy if enough timesteps collected
-            if total_steps >= timesteps_per_update:
-                sequences = []
-                for i in range(len(all_obs)):
-                    seq_dict = {
-                        "obs": all_obs[i],
-                        "actions": all_actions[i],
-                        "old_log_probs": all_log_probs[i],
-                        "values": all_values[i],
-                        "returns": None,
-                        "advantages": None
-                    }
-                    adv_i = ppo_trainer.compute_gae(
-                        all_rewards[i],
-                        all_dones[i],
-                        all_values[i],
-                        next_value=0.0
-                    )
-                    ret_i = all_values[i] + adv_i
-                    seq_dict["returns"] = ret_i
-                    seq_dict["advantages"] = adv_i
-                    sequences.append(seq_dict)
+        # Prepare rollouts for PPO
+        final_rollouts = {
+            "obs": np.array(seq_obs, dtype=np.float32)[None],           # (1, T, 3, 30, 40)
+            "actions": np.array(seq_actions, dtype=np.int64)[None],     # (1, T)
+            "old_log_probs": np.array(seq_log_probs, dtype=np.float32)[None],
+            "values": values_np[None],
+            "returns": returns_np[None],
+            "advantages": advantages_np[None]
+        }
 
-                # Pad sequences to equal length
-                max_len = max(seq["obs"].shape[0] for seq in sequences)
-                obs_list, actions_list, old_logp_list = [], [], []
-                returns_list, values_list, adv_list = [], [], []
+        # Update policy using PPO
+        stats = ppo_trainer.update(final_rollouts)
+        print(f"[Update] Steps={total_steps}, Episodes={episode_count}, Stats={stats}")
 
-                for seq in sequences:
-                    T_i = seq["obs"].shape[0]
-                    pad_len = max_len - T_i
+        # Clear collected sequences
+        seq_obs.clear()
+        seq_actions.clear()
+        seq_log_probs.clear()
+        seq_values.clear()
+        seq_rewards.clear()
+        seq_dones.clear()
 
-                    obs_pad = np.pad(seq["obs"], ((0, pad_len), (0,0), (0,0), (0,0)), mode="constant")
-                    actions_pad = np.pad(seq["actions"], (0, pad_len), mode="constant")
-                    old_logp_pad = np.pad(seq["old_log_probs"], (0, pad_len), mode="constant")
-                    returns_pad = np.pad(seq["returns"], (0, pad_len), mode="constant")
-                    values_pad = np.pad(seq["values"], (0, pad_len), mode="constant")
-                    adv_pad = np.pad(seq["advantages"], (0, pad_len), mode="constant")
-
-                    obs_list.append(obs_pad)
-                    actions_list.append(actions_pad)
-                    old_logp_list.append(old_logp_pad)
-                    returns_list.append(returns_pad)
-                    values_list.append(values_pad)
-                    adv_list.append(adv_pad)
-
-                final_rollouts = {
-                    "obs": np.stack(obs_list, axis=0),
-                    "actions": np.stack(actions_list, axis=0),
-                    "old_log_probs": np.stack(old_logp_list, axis=0),
-                    "returns": np.stack(returns_list, axis=0),
-                    "values": np.stack(values_list, axis=0),
-                    "advantages": np.stack(adv_list, axis=0)
-                }
-
-                stats = ppo_trainer.update(final_rollouts)
-                print(f"[Update] Steps={total_steps}, Episode={episode_count}, Stats={stats}")
-
-                # Clear buffers for next update cycle
-                all_obs.clear()
-                all_actions.clear()
-                all_log_probs.clear()
-                all_values.clear()
-                all_rewards.clear()
-                all_dones.clear()
-
-                # Reset policy states (no-op for SNAIL model)
-                policy.reset_lstm_states(batch_size=64)
-                policy.reset_lstm_states(batch_size=1)
-
-                timesteps_per_update += 20000
-
+        # Move to the next task
         task_idx = (task_idx + 1) % num_tasks
-
         if total_steps >= total_timesteps:
             break
 
+    # Save trained model and cleanup
     env.close()
-    torch.save(policy.state_dict(), "models/snail_performer_policy.pt")
+    torch.save(policy.state_dict(), "models/snail_performer_policy_sequence.pt")
     print("Model saved.")
-    print(f"Finished training after {total_steps} steps and {episode_count} episodes.")
+    print(f"Training completed after {total_steps} steps and {episode_count} episodes.")
+
 
 if __name__ == "__main__":
     main()

@@ -2,7 +2,7 @@
 
 from .cnn_encoder import CNNEncoder
 from .performer_model import SNAILPerformerPolicy
-from .ppo import PPOTrainer  # our new PPO in snail_performer
+from .ppo import PPOTrainer 
 
 __all__ = [
     "CNNEncoder",
