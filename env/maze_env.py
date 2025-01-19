@@ -56,7 +56,7 @@ class MetaMazeDiscrete3D(gym.Env):
     def set_task(self, task_config):
         self.maze_core.set_task(task_config)
         self.need_set_task = False
-        print("Task has been set successfully.")
+        # print("Task has been set successfully.")
 
     def reset(self, seed=None, options=None):
         if self.need_set_task:

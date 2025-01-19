@@ -19,7 +19,7 @@ class MazeBase(object):
         self.phase = 1  # 1 for exploration, 2 for testing
         self.phase_step_limit = kw_args.get('phase_step_limit', 250)  # Steps per phase
         self.current_phase_steps = 0  # Initialize step counter for the current phase
-        print(f"MazeBase initialized with Phase Step Limit: {self.phase_step_limit}")
+        # print(f"MazeBase initialized with Phase Step Limit: {self.phase_step_limit}")
 
     def set_task(self, task_config):
         # initialize textures
@@ -41,7 +41,7 @@ class MazeBase(object):
         assert self._agent_height < self._wall_height and self._agent_height > 0, "the agent height must be > 0 and < wall height"
         assert self._cell_walls.shape == self._cell_texts.shape, "the dimension of walls must be equal to textures"
         assert self._cell_walls.shape[0] == self._cell_walls.shape[1], "only support square shape"
-        print("Task has been set successfully in MazeBase.")
+        # print("Task has been set successfully in MazeBase.")
 
     def reset(self):
         self._agent_grid = numpy.copy(self._start)
@@ -68,7 +68,7 @@ class MazeBase(object):
         # Reset phase-related attributes
         self.phase = 1
         self.current_phase_steps = 0
-        print("Environment reset: Phase set to 1 and step counter reset.")
+        # print("Environment reset: Phase set to 1 and step counter reset.")
 
         self.update_observation()
         self.steps = 0

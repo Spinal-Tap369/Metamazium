@@ -152,6 +152,7 @@ class MinimalPerformerAttention(nn.Module):
                 f"Expected 'out' to have {b_h_s*f} elements, but got {out.numel()}."
             )
 
+        # Use reshape() instead of view()
         out_2d = out.reshape(b_h_s, f)
         out_2d = self.post_proj(out_2d)
         out = out_2d.view(b, h, s, self.dim_head)
@@ -191,13 +192,13 @@ class DenseCausalConvBlock(nn.Module):
         if d != self.in_dim:
             raise ValueError(f"Expected input dim {self.in_dim}, got {d}.")
 
-        x_t = x.transpose(1, 2)
-        xf = self.conv_f(x_t)[:, :, :seq]
-        xg = self.conv_g(x_t)[:, :, :seq]
+        x_t = x.transpose(1, 2)  # (b, in_dim, seq)
+        xf = self.conv_f(x_t)[:, :, :seq]  # (b, filters, seq)
+        xg = self.conv_g(x_t)[:, :, :seq]  # (b, filters, seq)
 
-        act = torch.tanh(xf) * torch.sigmoid(xg)
-        act = act.transpose(1, 2)
-        return torch.cat([x, act], dim=-1)
+        act = torch.tanh(xf) * torch.sigmoid(xg)  # (b, filters, seq)
+        act = act.transpose(1, 2)  # (b, seq, filters)
+        return torch.cat([x, act], dim=-1)  # (b, seq, in_dim + filters)
 
 class PerformerAttnBlock(nn.Module):
     """Block combining Performer attention with input concatenation."""
@@ -226,7 +227,7 @@ class PerformerAttnBlock(nn.Module):
 
 class SNAILPerformerPolicy(nn.Module):
     """
-    Policy model combining SNAIL blocks with Performer attention.
+    SNAIL + Performer-based policy.
     """
     def __init__(
         self,
@@ -241,7 +242,7 @@ class SNAILPerformerPolicy(nn.Module):
         causal=False
     ):
         super().__init__()
-        self.cnn_encoder = CNNEncoder()
+        self.cnn_encoder = CNNEncoder()  # Now expects 6 input channels
         self.init_dim = base_dim
 
         current_dim = self.init_dim
@@ -273,21 +274,17 @@ class SNAILPerformerPolicy(nn.Module):
 
         self.norm = nn.LayerNorm(self.final_dim)
         self.policy_head = nn.Linear(self.final_dim, action_dim)
-        self.value_head  = nn.Linear(self.final_dim, 1)
-
-        self.single_step_expand = nn.Linear(base_dim, self.final_dim)
+        self.value_head = nn.Linear(self.final_dim, 1)
 
     def forward(self, obs_seq):
         """
-        Forward pass for sequence of observations.
-        
-        obs_seq: (B, T, 3, 30, 40)
-        returns: policy_logits (B, T, action_dim), values (B, T)
+        obs_seq shape: (B, T, 6, H, W).
+        Returns: policy_logits (B,T,action_dim), values (B,T).
         """
-        B, T, C, H, W = obs_seq.shape
-        x = obs_seq.view(B*T, C, H, W)
-        feats = self.cnn_encoder(x)
-        feats = feats.view(B, T, -1)
+        B, T, C, H, W = obs_seq.shape  # C=6
+        x = obs_seq.reshape((B*T, C, H, W))  # Use reshape instead of view
+        feats = self.cnn_encoder(x)  # => (B*T, 256)
+        feats = feats.reshape(B, T, -1)  # Use reshape instead of view
 
         out = feats
         for blk in self.snail_blocks:
@@ -299,24 +296,19 @@ class SNAILPerformerPolicy(nn.Module):
         return policy_logits, values
 
     @torch.no_grad()
-    def act_single_step(self, obs_single):
+    def act_online_sequence(self, obs_seq):
         """
-        Acts on a single observation step.
-        
-        obs_single: (3, 30, 40)
-        returns: policy_logits (1, action_dim), value (1,)
+        Fully online SNAIL approach:
+        - obs_seq shape: (1, t, 6, H, W).
+        - Runs forward(...) on entire sequence.
+        - Returns last step's distribution => shape (1, action_dim).
         """
-        obs_single = obs_single.unsqueeze(0)
-        feats = self.cnn_encoder(obs_single)
-        feats = F.relu(self.single_step_expand(feats))
-        policy_logits = self.policy_head(feats)
-        values = self.value_head(feats).squeeze(-1)
-        return policy_logits, values
+        logits, _ = self.forward(obs_seq)
+        last_logits = logits[:, -1, :]
+        return last_logits
 
     def reset_sequence_states(self):
-        """No sequence states to reset."""
-        pass
+        pass  # Not required for this policy model
 
     def reset_lstm_states(self, batch_size=1):
-        """No LSTM states to reset; placeholder for compatibility."""
-        pass
+        pass  # Not required for this policy model

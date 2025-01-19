@@ -80,7 +80,7 @@ class PPOTrainer:
 
         Args:
             rollouts (dict): Contains:
-                - obs (np.array): Observations (N, T, 3, 30, 40).
+                - obs (np.array): Observations (N, T, 6, H, W).
                 - actions (np.array): Actions taken (N, T).
                 - old_log_probs (np.array): Log probabilities (N, T).
                 - returns (np.array): Discounted returns (N, T).
