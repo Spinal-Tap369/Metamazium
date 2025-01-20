@@ -1,74 +1,79 @@
-# lstm_ppo/lstm_model.py
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .cnn_encoder import CNNEncoder
 
-class LSTMPolicy(nn.Module):
-    def __init__(self, action_dim=4, hidden_size=512):
-        """
-        Initializes the LSTM-based policy model.
-        
-        Args:
-            action_dim (int): Number of possible actions.
-            hidden_size (int): Hidden size of the LSTM.
-        """
+class StackedLSTMPolicy(nn.Module):
+    """
+    A stacked two-layer LSTM policy network that processes sequences of observations.
+
+    The network takes an input tensor of shape (B, T, 6, H, W), where:
+      - B is the batch size,
+      - T is the sequence length,
+      - 6 is the number of channels expected by the CNN encoder,
+      - H and W are the height and width of the image observations.
+
+    The processing pipeline is as follows:
+      1. Flatten the input to shape (B*T, 6, H, W) and pass it through the CNN encoder to obtain embeddings of shape (B*T, 256).
+      2. Reshape these embeddings to (B, T, 256) for sequential processing.
+      3. Pass the sequence through a two-layer stacked LSTM to produce outputs of shape (B, T, hidden_size).
+      4. Apply linear projections to produce policy logits of shape (B, T, action_dim) and value estimates of shape (B, T).
+    """
+    def __init__(self, action_dim=4, hidden_size=512, num_layers=2):
         super().__init__()
-        self.cnn_encoder = CNNEncoder()
+        self.action_dim = action_dim
         self.hidden_size = hidden_size
-        self.lstm = nn.LSTM(input_size=256, hidden_size=hidden_size, batch_first=True)
+        self.num_layers = num_layers
+
+        # Initialize the CNN encoder to handle 6-channel input.
+        self.cnn_encoder = CNNEncoder()
+
+        # Two-layer LSTM with batch_first format.
+        self.lstm = nn.LSTM(
+            input_size=256,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True
+        )
+
+        # Linear heads to predict policy logits and state value estimates.
         self.policy_head = nn.Linear(hidden_size, action_dim)
         self.value_head = nn.Linear(hidden_size, 1)
 
-        self._h = None
-        self._c = None
-
-    def reset_memory(self, batch_size=1, device=None):
+    def forward(self, x):
         """
-        Resets LSTM hidden and cell states.
+        Forward pass of the stacked LSTM policy network.
 
         Args:
-            batch_size (int): Batch size for the LSTM states.
-            device (torch.device, optional): Device to initialize the states on.
-        """
-        if device is None:
-            device = next(self.parameters()).device
+            x (torch.Tensor): Input tensor of shape (B, T, 6, H, W).
 
-        self._h = torch.zeros(1, batch_size, self.hidden_size, device=device)
-        self._c = torch.zeros(1, batch_size, self.hidden_size, device=device)
-
-    def forward(self, obs_seq):
-        """
-        Processes a sequence of observations through the model.
-
-        Args:
-            obs_seq (torch.Tensor): Input tensor of shape (B, T, 3, 30, 40).
-        
         Returns:
-            tuple: Policy logits (B, T, action_dim) and value estimates (B, T).
+            tuple: A tuple containing:
+              - policy_logits (torch.Tensor): Tensor of shape (B, T, action_dim).
+              - values (torch.Tensor): Tensor of shape (B, T) representing value estimates.
         """
-        B, T, C, H, W = obs_seq.shape
-        x = obs_seq.view(B * T, C, H, W)
-        feats = self.cnn_encoder(x)  # => (B*T, 256)
-        feats = feats.view(B, T, -1)  # => (B, T, 256)
+        B, T, C, H, W = x.shape
+        # Reshape input to combine batch and time dimensions for CNN processing.
+        x2 = x.view(B*T, C, H, W)  # Shape: (B*T, 6, H, W)
+        feats = self.cnn_encoder(x2)  # Shape: (B*T, 256)
 
-        lstm_out, (self._h, self._c) = self.lstm(feats, (self._h, self._c))
-        policy_logits = self.policy_head(lstm_out)     # (B, T, action_dim)
-        values = self.value_head(lstm_out).squeeze(-1) # (B, T)
+        # Reshape back to separate batch and sequence dimensions.
+        feats_3d = feats.view(B, T, 256)  # Shape: (B, T, 256)
+        lstm_out, _ = self.lstm(feats_3d)  # Shape: (B, T, hidden_size)
+
+        # Compute policy logits and value estimates.
+        policy_logits = self.policy_head(lstm_out)      # Shape: (B, T, action_dim)
+        values = self.value_head(lstm_out).squeeze(-1)  # Shape: (B, T)
         return policy_logits, values
 
-    @torch.no_grad()
-    def act_single_step(self, obs_single):
+    def forward_rollout(self, x):
         """
-        Performs a single step action for the environment.
+        Wrapper for forward pass to maintain naming consistency.
 
         Args:
-            obs_single (torch.Tensor): Input tensor of shape (3, 30, 40).
-        
+            x (torch.Tensor): Input tensor of shape (B, T, 6, H, W).
+
         Returns:
-            tuple: Logits (1, action_dim) and value (1).
+            tuple: See forward method.
         """
-        obs_single = obs_single.unsqueeze(0).unsqueeze(0)
-        logits, vals = self.forward(obs_single)  # => shapes (1, 1, action_dim), (1, 1)
-        return logits[:, -1, :], vals[:, -1]
+        return self.forward(x)

@@ -1,36 +1,40 @@
-# lstm_ppo/cnn_encoder.py
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 class CNNEncoder(nn.Module):
     """
-    CNN encoder for a first-person maze observation (3 x 30 x 40).
-    Uses two 5x5 convolutional layers with stride 2 and 16 filters,
-    followed by a fully connected layer to project to a 256-dimensional feature vector.
-    Adjust dimensions if the input observation shape changes.
+    A convolutional neural network (CNN) encoder tailored for a 6-channel input:
+      - 3 channels for RGB image data,
+      - 1 channel representing the last action taken,
+      - 1 channel representing the last received reward,
+      - 1 channel for a boundary indicator bit.
+
+    The encoder processes the input and outputs a 256-dimensional feature embedding.
+    Adjust the kernel sizes and strides as needed if the input shape changes.
     """
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=5, stride=2)
-
+        # Initialize convolutional layers for 6 input channels.
+        self.conv1 = nn.Conv2d(in_channels=6, out_channels=16, kernel_size=5, stride=2)
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=16, kernel_size=5, stride=2)
         
-        # After two conv layers on a 30x40 input, the feature map size ~ (16, 5, 7)
-        # Flattened size ~ 16*5*7 = 560; project to 256-dim feature vector
+        # Based on an example input shape (6, 30, 40), two conv layers result in an output ~ (16, 5, 7).
+        # Flattening this output gives 16*5*7 = 560 features, which are then projected to a 256-dimensional space.
         self.fc = nn.Linear(16 * 5 * 7, 256)
 
     def forward(self, obs):
         """
         Forward pass of the CNN encoder.
+
         Args:
-            obs (Tensor): Batch of observations with shape (batch_size, 3, 30, 40).
+            obs (torch.Tensor): Input tensor of shape (batch_size, 6, H, W).
+
         Returns:
-            Tensor: Encoded features with shape (batch_size, 256).
+            torch.Tensor: A tensor of shape (batch_size, 256) representing the encoded features.
         """
         x = F.relu(self.conv1(obs))
         x = F.relu(self.conv2(x))
-        x = x.view(x.size(0), -1)  # flatten feature maps
+        x = x.reshape(x.size(0), -1)  # Flatten the convolutional output.
         x = F.relu(self.fc(x))
         return x

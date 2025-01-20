@@ -4,10 +4,10 @@ import gymnasium as gym
 import numpy as np
 import torch
 import json
-from tqdm import tqdm  # For progress bar
+from tqdm import tqdm
 
-import env  # Ensure your custom env is registered
-from snail_performer.performer_model import SNAILPerformerPolicy
+import env
+from snail_performer.snail_model import SNAILPolicyValueNet
 from snail_performer.ppo import PPOTrainer
 from env.maze_task import MazeTaskSampler
 
@@ -15,218 +15,199 @@ def main():
     env_id = "MetaMazeDiscrete3D-v0"
     env = gym.make(env_id, enable_render=False)
 
-    # Load tasks
-    tasks_file = "mazes_data/train_tasks.json"
-    with open(tasks_file, "r") as f:
+    # Load tasks configuration
+    with open("mazes_data/train_tasks.json", "r") as f:
         tasks = json.load(f)
     num_tasks = len(tasks)
-    tqdm.write(f"Loaded {num_tasks} tasks from {tasks_file}")
+    print(f"Loaded {num_tasks} tasks.")
 
     # Hyperparameters
-    total_timesteps = 800000
-    timesteps_per_update = 50000
+    total_timesteps = 40000
+    steps_per_update = 2000
     gamma = 0.99
     gae_lambda = 0.99
     clip_range = 0.2
     target_kl = 0.03
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Initialize policy and PPO trainer
-    policy = SNAILPerformerPolicy(
+    # Initialize SNAIL model and PPO trainer
+    snail = SNAILPolicyValueNet(
         action_dim=4,
         base_dim=256,
-        num_tc_blocks=2,
-        tc_filters=32,
-        attn_heads=8,
-        attn_dim_head=256,
-        nb_features=256,
-        causal=False
+        policy_filters=32,
+        policy_attn_dim=16,
+        value_filters=16,
+        seq_len=200,
+        num_policy_attn=2
     ).to(device)
 
     ppo_trainer = PPOTrainer(
-        policy_model=policy,
-        lr=1e-5,
+        policy_model=snail,
+        lr=1e-4,
         gamma=gamma,
         gae_lambda=gae_lambda,
         clip_range=clip_range,
-        n_epochs=5,
-        batch_size=8,
+        n_epochs=3,
         target_kl=target_kl,
-        max_grad_norm=0.3,
+        max_grad_norm=0.5,
         entropy_coef=0.01,
         value_coef=0.5
     )
 
     total_steps = 0
-    episode_count = 0
     task_idx = 0
+    pbar = tqdm(total=total_timesteps, desc="Training")
 
-    # Global buffers for collecting transitions.
-    seq_obs = []
-    seq_actions = []
-    seq_log_probs = []
-    seq_values = []
-    seq_rewards = []
-    seq_dones = []
-
-    # Initialize step counter since last PPO update
-    steps_since_update = 0
-
-    # Initialize tqdm progress bar
-    pbar = tqdm(total=total_timesteps, desc="Training Progress", dynamic_ncols=True)
+    # Buffers to store rollout data
+    obs_buffer = []
+    act_buffer = []
+    logp_buffer = []
+    val_buffer = []
+    rew_buffer = []
+    done_buffer = []
 
     while total_steps < total_timesteps:
-        # Pick next maze task
-        this_task_params = tasks[task_idx]
-        task_config = MazeTaskSampler(**this_task_params)
+        # Set new task for each episode
+        task_config = MazeTaskSampler(**tasks[task_idx])
         env.unwrapped.set_task(task_config)
-        tqdm.write(f"*** Starting new maze task {task_idx+1}/{num_tasks} ***")
+        task_idx = (task_idx + 1) % num_tasks
 
-        # Reset boundaries and previous action/reward at start of new episode
-        last_action = 0.0  
-        last_reward = 0.0
-        boundary_flag = 1.0  
-        phase_boundary_signaled = False
-
-        # Run exactly ONE full episode in this maze
-        obs_raw, info = env.reset()
+        obs_raw, _ = env.reset()
         done = False
         truncated = False
 
-        episode_obs_list = []
+        last_action = 0.0
+        last_reward = 0.0
+        boundary_bit = 1.0
+        phase_boundary_signaled = False
 
-        while not done and not truncated:
-            # Check for phase 2 boundary transition
-            if env.unwrapped.maze_core.phase == 2 and not phase_boundary_signaled:
-                boundary_flag = 1.0
-                phase_boundary_signaled = True
-            else:
-                boundary_flag = 0.0
+        # Episode-specific buffers
+        ep_obs_seq = []
+        ep_actions = []
+        ep_logprobs = []
+        ep_values = []
+        ep_rewards = []
+        ep_dones = []
 
-            # Build 6-channel input:
-            obs_image = np.transpose(obs_raw, (2, 0, 1))  # shape (3,H,W)
-            H, W = obs_image.shape[1], obs_image.shape[2]
-            channel3 = np.full((1, H, W), last_action, dtype=np.float32)
-            channel4 = np.full((1, H, W), last_reward, dtype=np.float32)
-            channel5 = np.full((1, H, W), boundary_flag, dtype=np.float32)
+        while not done and not truncated and total_steps < total_timesteps:
+            # Construct 6-channel observation
+            obs_img = np.transpose(obs_raw, (2,0,1))
+            H, W = obs_img.shape[1], obs_img.shape[2]
+            c3 = np.full((1,H,W), last_action, dtype=np.float32)
+            c4 = np.full((1,H,W), last_reward, dtype=np.float32)
+            c5 = np.full((1,H,W), boundary_bit, dtype=np.float32)
+            obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)
 
-            # Concatenate channels to form 6-channel observation
-            obs_6ch = np.concatenate((obs_image, channel3, channel4, channel5), axis=0)  # shape (6,H,W)
-            episode_obs_list.append(obs_6ch)
+            ep_obs_seq.append(obs_6ch)
+            t_len = len(ep_obs_seq)
 
-            # Build sequence so far: shape (1, t, 6, H, W)
-            t = len(episode_obs_list)
-            full_obs_seq = np.array(episode_obs_list, dtype=np.float32)[None]  # (1,t,6,H,W)
-            full_obs_seq_torch = torch.from_numpy(full_obs_seq).float().to(device)
-
-            # Get action logits for the last timestep
+            # Build partial sequence and forward through model
+            obs_seq_np = np.stack(ep_obs_seq, axis=0)[None]
+            obs_seq_torch = torch.from_numpy(obs_seq_np).float().to(device)
             with torch.no_grad():
-                logits_last = policy.act_online_sequence(full_obs_seq_torch)
+                logits_seq, vals_seq = snail(obs_seq_torch)
+            logits_t = logits_seq[:, t_len-1, :]
+            val_t = vals_seq[:, t_len-1]
 
-            # Sample action from the distribution
-            dist = torch.distributions.Categorical(logits=logits_last)
+            # Sample action from policy
+            dist = torch.distributions.Categorical(logits=logits_t)
             action = dist.sample()
             logp = dist.log_prob(action)
 
-            # Step the environment with the sampled action
+            # Interact with environment
             obs_next, reward, done, truncated, info = env.step(action.item())
             total_steps += 1
-            steps_since_update += 1
+            pbar.update(1)
 
-            # Save transition data
-            seq_obs.append(obs_6ch)
-            seq_actions.append(action.item())
-            seq_log_probs.append(logp.item())
-            seq_rewards.append(reward)
-            seq_dones.append(float(done))
-            # We will fill seq_values later
+            # Store transition data
+            ep_actions.append(action.item())
+            ep_logprobs.append(logp.item())
+            ep_values.append(val_t.item())
+            ep_rewards.append(reward)
+            ep_dones.append(float(done))
 
-            # Update last_action and last_reward for next timestep
             last_action = float(action.item())
             last_reward = float(reward)
-
             obs_raw = obs_next
 
-            # Update tqdm progress bar dynamically
-            current_phase = env.unwrapped.maze_core.phase
-            phase_steps = env.unwrapped.maze_core.current_phase_steps
-            pbar.update(1)
-            pbar.set_postfix({
-                "Phase": current_phase,
-                "Phase Steps": phase_steps,
-                "Total Steps": total_steps,
-            })
+            # Update boundary bit on phase change
+            if env.unwrapped.maze_core.phase == 2 and not phase_boundary_signaled:
+                boundary_bit = 1.0
+                phase_boundary_signaled = True
+            else:
+                boundary_bit = 0.0
 
-            if steps_since_update >= timesteps_per_update:
-                tqdm.write(f"Collected {steps_since_update} transitions so far. Doing PPO update...")
+        # Append episode data to main buffers
+        obs_buffer.extend(ep_obs_seq)
+        act_buffer.extend(ep_actions)
+        logp_buffer.extend(ep_logprobs)
+        val_buffer.extend(ep_values)
+        rew_buffer.extend(ep_rewards)
+        done_buffer.extend(ep_dones)
 
-                # Next value estimation
-                next_value = 0.0
-                if not done:
-                    obs_image = np.transpose(obs_raw, (2, 0, 1))
-                    H, W = obs_image.shape[1], obs_image.shape[2]
-                    channel3 = np.full((1, H, W), last_action, dtype=np.float32)
-                    channel4 = np.full((1, H, W), last_reward, dtype=np.float32)
-                    channel5 = np.full((1, H, W), boundary_flag, dtype=np.float32)
-                    obs_6ch_final = np.concatenate((obs_image, channel3, channel4, channel5), axis=0)
-                    full_obs_seq_final = torch.from_numpy(obs_6ch_final).float().unsqueeze(0).unsqueeze(0).to(device)  # (1,1,6,H,W)
-                    with torch.no_grad():
-                        logits, final_val = policy.forward(full_obs_seq_final)
-                        next_value = final_val[0,0].item()
-                else:
-                    next_value = 0.0
-
-                # Build observation array for value estimation
-                T_ = len(seq_obs)
-                full_obs_array = np.array(seq_obs, dtype=np.float32)[None]  # shape (1,T_,6,H,W)
-
-                with torch.no_grad():
-                    full_obs_t = torch.from_numpy(full_obs_array).float().to(device)
-                    _, all_values_t = policy.forward(full_obs_t)  # shape (1, T_)
-                    all_values_np = all_values_t.cpu().numpy().squeeze(0)
-
-                seq_values = all_values_np.tolist()
-
-                rewards_np = np.array(seq_rewards, dtype=np.float32)
-                dones_np   = np.array(seq_dones, dtype=np.float32)
-                values_np  = np.array(seq_values, dtype=np.float32)
-
-                advantages_np = ppo_trainer.compute_gae(
-                    rewards=rewards_np,
-                    dones=dones_np,
-                    values=values_np,
-                    next_value=next_value
-                )
-                returns_np = values_np + advantages_np
-
-                final_rollouts = {
-                    "obs": full_obs_array,  # shape (1,T_,6,H,W)
-                    "actions": np.array(seq_actions, dtype=np.int64)[None],
-                    "old_log_probs": np.array(seq_log_probs, dtype=np.float32)[None],
-                    "values": values_np[None],
-                    "returns": returns_np[None],
-                    "advantages": advantages_np[None]
-                }
-
-                stats = ppo_trainer.update(final_rollouts)
-                tqdm.write(f"[Update] Steps={total_steps}, Episode={episode_count}, Stats={stats}")
-
-                seq_obs.clear()
-                seq_actions.clear()
-                seq_log_probs.clear()
-                seq_values.clear()
-                seq_rewards.clear()
-                seq_dones.clear()
-                steps_since_update = 0
-
-        episode_count += 1
-        task_idx = (task_idx + 1) % num_tasks
+        # Trigger PPO update when buffer is large enough
+        if len(obs_buffer) >= steps_per_update:
+            do_update(snail, ppo_trainer,
+                      obs_buffer, act_buffer, logp_buffer,
+                      val_buffer, rew_buffer, done_buffer, device)
+            obs_buffer.clear()
+            act_buffer.clear()
+            logp_buffer.clear()
+            val_buffer.clear()
+            rew_buffer.clear()
+            done_buffer.clear()
 
     pbar.close()
     env.close()
-    torch.save(policy.state_dict(), "models/snail_performer_policy_sequence.pt")
-    tqdm.write("Model saved.")
-    tqdm.write(f"Training completed after {total_steps} steps and {episode_count} episodes.")
+
+    # Final PPO update for any remaining data
+    if len(obs_buffer) > 0:
+        do_update(snail, ppo_trainer,
+                  obs_buffer, act_buffer, logp_buffer,
+                  val_buffer, rew_buffer, done_buffer, device)
+
+    torch.save(snail.state_dict(), "models/snail_snaillike_policy_value_online.pt")
+    print(f"Training finished after {total_steps} steps.")
+
+def do_update(snail_net, trainer, obs_buf, act_buf, logp_buf, val_buf, rew_buf, done_buf, device):
+    """
+    Prepare rollout data, compute GAE and returns, then perform PPO update.
+    """
+    T = len(obs_buf)
+    if T < 2:
+        return
+
+    # Stack buffers into arrays
+    obs_np = np.stack(obs_buf, axis=0)[None]
+    acts_np = np.array(act_buf, dtype=np.int64)[None]
+    logp_np = np.array(logp_buf, dtype=np.float32)[None]
+    vals_np = np.array(val_buf, dtype=np.float32)[None]
+    rews_np = np.array(rew_buf, dtype=np.float32)[None]
+    done_np = np.array(done_buf, dtype=np.float32)[None]
+
+    B, T_ = acts_np.shape
+    next_value = 0.0
+
+    rewards_ = rews_np.reshape(-1)
+    dones_ = done_np.reshape(-1)
+    values_ = vals_np.reshape(-1)
+
+    advantages_ = trainer.compute_gae(rewards=rewards_, dones=dones_, values=values_, next_value=next_value)
+    returns_ = values_ + advantages_
+
+    adv_2d = advantages_.reshape(B, T_)
+    ret_2d = returns_.reshape(B, T_)
+
+    rollouts = {
+        "obs": obs_np,
+        "actions": acts_np,
+        "old_log_probs": logp_np,
+        "returns": ret_2d,
+        "values": vals_np,
+        "advantages": adv_2d
+    }
+    stats = trainer.update(rollouts)
+    print("[PPO Update]", stats)
 
 if __name__ == "__main__":
     main()
