@@ -1,3 +1,5 @@
+# train_lstm_ppo.py
+
 import gymnasium as gym
 import numpy as np
 import torch
@@ -19,16 +21,15 @@ def main():
     env_id = "MetaMazeDiscrete3D-v0"
     env = gym.make(env_id, enable_render=False)
 
-    # Load training tasks from a JSON file.
     tasks_file = "mazes_data/train_tasks.json"
     with open(tasks_file, "r") as f:
         tasks = json.load(f)
     num_tasks = len(tasks)
     print(f"Loaded {num_tasks} tasks.")
 
-    # Hyperparameters.
-    total_timesteps = 4000
-    steps_per_update = 2000
+    # Hyperparameters
+    total_timesteps = 1200000
+    steps_per_update = 80000
     gamma = 0.99
     gae_lambda = 0.99
     clip_range = 0.2

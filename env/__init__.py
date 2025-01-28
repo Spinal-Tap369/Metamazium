@@ -24,7 +24,7 @@ register(
         "resolution": (40, 30),
         "max_steps": 5000,
         "task_type": "ESCAPE",
-        "phase_step_limit": 400,  # Define steps per phase
+        "phase_step_limit": 600,  # Define steps per phase
         "collision_penalty": -0.001  # Define collision penalty
     }
 )

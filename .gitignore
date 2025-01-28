@@ -6,3 +6,4 @@ train_lstm_ppo_debug.py
 models/
 test_lstm_ppo_eval.py
 snail_eval.py
+test_attn.py
