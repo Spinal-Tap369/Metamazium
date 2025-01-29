@@ -44,7 +44,7 @@ def main():
 
     ppo_trainer = PPOTrainer(
         policy_model=snail,
-        lr=1e-4,
+        lr=0.00005,
         gamma=gamma,
         gae_lambda=gae_lambda,
         clip_range=clip_range,
@@ -218,6 +218,11 @@ def do_update(snail_net, trainer, obs_buf, act_buf, logp_buf, val_buf, rew_buf, 
     rewards_ = rews_np.reshape(-1)
     dones_ = done_np.reshape(-1)
     values_ = vals_np.reshape(-1)
+
+    # standardize rewards
+    mean_r = np.mean(rewards_)
+    std_r  = np.std(rewards_) + 1e-6
+    rewards_ = (rewards_ - mean_r) / std_r
 
     # Compute advantages using GAE
     advantages_ = trainer.compute_gae(

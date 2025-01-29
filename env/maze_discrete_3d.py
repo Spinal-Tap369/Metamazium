@@ -161,6 +161,12 @@ class MazeCoreDiscrete3D(MazeBase):
                 # step_reward is negative => add to step_rewards
                 self.phase_metrics[1]["step_rewards"] += self._step_reward
                 reward = self._step_reward
+                # add a  exploration bonus if agent first hits the goal in phase1
+                if agent_at_goal and not self._gave_exploration_bonus:
+                    bonus = 0.5
+                    reward += bonus
+                    self._gave_exploration_bonus = True
+                    # print("Exploration bonus of", bonus, "awarded!")
                 done = False
             elif self.phase == 2:
                 # In phase 2, if agent_at_goal => get goal reward

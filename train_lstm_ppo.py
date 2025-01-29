@@ -224,6 +224,11 @@ def do_update(policy_net, trainer,
     dones_ = done_np.reshape(-1)
     values_ = vals_np.reshape(-1)
 
+    # standardize rewards
+    mean_r = np.mean(rewards_)
+    std_r  = np.std(rewards_) + 1e-6
+    rewards_ = (rewards_ - mean_r) / std_r
+
     # Compute advantages and returns.
     advantages_ = trainer.compute_gae(rewards_, dones_, values_, next_value)
     returns_ = values_ + advantages_
