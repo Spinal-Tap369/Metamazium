@@ -1,4 +1,4 @@
-# env\__init__.py
+# metamazium\env\__init__.py
 
 from gymnasium.envs.registration import register
 

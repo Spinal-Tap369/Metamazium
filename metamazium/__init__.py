@@ -14,7 +14,6 @@ from .snail_performer.ppo import PPOTrainer
 from .snail_performer.cnn_encoder import CNNEncoder
 
 
-# Define the public API of the package
 __all__ = [
     'MetaMazeContinuous3D',
     'MetaMazeDiscrete3D',

@@ -1,0 +1,11 @@
+numpy
+packaging
+torch
+pygame
+gymnasium
+numba
+AxialPositionalEmbedding
+LocalAttention
+flash-attn
+einops
+tqdm
