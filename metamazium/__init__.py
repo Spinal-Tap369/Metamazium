@@ -1,17 +1,17 @@
 # metamazium/__init__.py
 
 # Importing environment-related modules
-from .env.maze_env import MetaMazeContinuous3D, MetaMazeDiscrete3D, MetaMaze2D
+from metamazium.env.maze_env import MetaMazeDiscrete3D
 
 # Importing Performer components
-from .performer.performer_pytorch import PerformerLM, Performer, SelfAttention, CrossAttention
-from .performer.autoregressive_wrapper import AutoregressiveWrapper
-from .performer.performer_enc_dec import PerformerEncDec
+from metamazium.performer.performer_pytorch import PerformerLM, Performer, SelfAttention, CrossAttention
+from metamazium.performer.autoregressive_wrapper import AutoregressiveWrapper
+from metamazium.performer.performer_enc_dec import PerformerEncDec
 
 # Importing SNAIL Performer components
-from .snail_performer.snail_model import SNAILPolicyValueNet
-from .snail_performer.ppo import PPOTrainer
-from .snail_performer.cnn_encoder import CNNEncoder
+from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
+from metamazium.snail_performer.ppo import PPOTrainer
+from metamazium.snail_performer.cnn_encoder import CNNEncoder
 
 
 __all__ = [

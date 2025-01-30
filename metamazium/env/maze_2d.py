@@ -2,9 +2,9 @@
 
 import numpy
 import pygame
-from env.ray_caster_utils import maze_view
-from env.maze_task import MAZE_TASK_MANAGER
-from env.maze_base import MazeBase
+from metamazium.env.ray_caster_utils import maze_view
+from metamazium.env.maze_task import MAZE_TASK_MANAGER
+from metamazium.env.maze_base import MazeBase
 
 class MazeCore2D(MazeBase):
     def __init__(self, view_grid=2, task_type="SURVIVAL", max_steps=5000):

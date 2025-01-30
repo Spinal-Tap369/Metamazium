@@ -6,8 +6,8 @@ import pygame
 
 from gymnasium import error, spaces, utils
 from gymnasium.utils import seeding
-from env.maze_2d import MazeCore2D
-from env.maze_discrete_3d import MazeCoreDiscrete3D  
+from metamazium.env.maze_2d import MazeCore2D
+from metamazium.env.maze_discrete_3d import MazeCoreDiscrete3D  
 
 DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # Left, Right, Down, Up
 

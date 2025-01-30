@@ -5,9 +5,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .cnn_encoder import CNNEncoder
+from metamazium.snail_performer.cnn_encoder import CNNEncoder
 
-from performer.performer_pytorch import SelfAttention
+from metamazium.performer.performer_pytorch import SelfAttention
 
 
 class DenseBlock(nn.Module):

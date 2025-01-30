@@ -4,7 +4,7 @@ import numpy
 import pygame
 import time
 from numba import njit
-from env.dynamics import PI, PI_4
+from metamazium.env.dynamics import PI, PI_4
 
 FAR_RGB = numpy.array([0, 0, 0], dtype="float32")
 TRANSPARENT_RGB = numpy.array([0, 255, 0], dtype="float32")

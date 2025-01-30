@@ -9,12 +9,24 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+import metamazium.env
+
 # Import from your metamazium package
 from metamazium.env.maze_task import MazeTaskSampler
 from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
 from metamazium.snail_performer.ppo import PPOTrainer
 
-def parse_args():
+
+def parse_args(args=None):
+    """
+    Parse command-line arguments or a list of arguments.
+
+    Args:
+        args (list, optional): List of arguments to parse. Defaults to None.
+
+    Returns:
+        argparse.Namespace: Parsed arguments.
+    """
     parser = argparse.ArgumentParser(description="Train SNAIL Performer on MetaMaze environment.")
 
     # Training hyperparameters
@@ -36,19 +48,28 @@ def parse_args():
     parser.add_argument("--checkpoint_file", type=str, default=None, help="Path to a specific checkpoint file to load. Overrides checkpoint_dir if provided.")
     parser.add_argument("--model_save_path", type=str, default=None, help="Path to save the final model (optional).")
 
-    return parser.parse_args()
+    return parser.parse_args(args)
 
 
-def main(args):
+def main(args=None):
+    """
+    Main function to train the SNAIL Performer model.
+
+    Args:
+        args (list, optional): List of arguments to parse. Defaults to None.
+    """
+    # Parse arguments using parse_args(args)
+    parsed_args = parse_args(args)
+    
     # Setup device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Determine checkpoint file path
-    if args.checkpoint_file is not None:
-        checkpoint_file = args.checkpoint_file
-        checkpoint_dir = os.path.dirname(checkpoint_file) if checkpoint_file else args.checkpoint_dir
+    # Determine checkpoint file path using parsed_args (NOT args)
+    if parsed_args.checkpoint_file is not None:
+        checkpoint_file = parsed_args.checkpoint_file
+        checkpoint_dir = os.path.dirname(checkpoint_file) if checkpoint_file else parsed_args.checkpoint_dir
     else:
-        checkpoint_dir = args.checkpoint_dir
+        checkpoint_dir = parsed_args.checkpoint_dir
         checkpoint_file = os.path.join(checkpoint_dir, "snail_ckpt.pth")
 
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -57,8 +78,7 @@ def main(args):
     env_id = "MetaMazeDiscrete3D-v0"
     env = gym.make(env_id, enable_render=False)
 
-    # Load tasks configuration from mazes_data in the main directory
-    # Assuming the current working directory is the main directory where setup.py is located
+    # Load tasks configuration (train_tasks.json) from the mazes_data folder
     tasks_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mazes_data", "train_tasks.json")
     tasks_file_path = os.path.normpath(tasks_file_path)  # Normalize path for different OS
 
@@ -70,20 +90,20 @@ def main(args):
         tasks = json.load(f)
     num_tasks = len(tasks)
 
-    # PPO hyperparameters
-    total_timesteps = args.total_timesteps
-    steps_per_update = args.steps_per_update
-    gamma = args.gamma
-    gae_lambda = args.gae_lambda
-    clip_range = args.clip_range
-    target_kl = args.target_kl
+    # Retrieve hyperparameters from parsed_args
+    total_timesteps = parsed_args.total_timesteps
+    steps_per_update = parsed_args.steps_per_update
+    gamma = parsed_args.gamma
+    gae_lambda = parsed_args.gae_lambda
+    clip_range = parsed_args.clip_range
+    target_kl = parsed_args.target_kl
 
     # Entropy scheduling
-    entropy_coef_start = args.entropy_coef_start
-    entropy_coef_end   = args.entropy_coef_end
-    entropy_anneal_end = args.entropy_anneal_end
+    entropy_coef_start = parsed_args.entropy_coef_start
+    entropy_coef_end   = parsed_args.entropy_coef_end
+    entropy_anneal_end = parsed_args.entropy_anneal_end
 
-    # Initialize SNAIL model
+    # Initialize the SNAIL model
     snail = SNAILPolicyValueNet(
         action_dim=4,
         base_dim=256,
@@ -97,7 +117,7 @@ def main(args):
     # Initialize PPO trainer
     ppo_trainer = PPOTrainer(
         policy_model=snail,
-        lr=args.lr,
+        lr=parsed_args.lr,
         gamma=gamma,
         gae_lambda=gae_lambda,
         clip_range=clip_range,
@@ -122,7 +142,7 @@ def main(args):
     else:
         tqdm.write("No valid checkpoint found; starting from scratch.")
 
-    # Main progress bar
+    # Main training progress bar
     pbar = tqdm(total=total_timesteps, initial=total_steps, desc="Training Progress")
 
     # Rollout buffers
@@ -168,7 +188,7 @@ def main(args):
 
         while not done and not truncated and total_steps < total_timesteps:
             # Construct 6-channel observation
-            obs_img = np.transpose(obs_raw, (2, 0, 1))  # (3,H,W)
+            obs_img = np.transpose(obs_raw, (2, 0, 1))  # (3, H, W)
             H, W = obs_img.shape[1], obs_img.shape[2]
             c3 = np.full((1, H, W), last_action, dtype=np.float32)
             c4 = np.full((1, H, W), last_reward, dtype=np.float32)
@@ -178,7 +198,7 @@ def main(args):
             ep_obs_seq.append(obs_6ch)
             t_len = len(ep_obs_seq)
 
-            obs_seq_np = np.stack(ep_obs_seq, axis=0)[None]
+            obs_seq_np = np.stack(ep_obs_seq, axis=0)[None]  # shape: (1, T, 6, H, W)
             obs_seq_torch = torch.from_numpy(obs_seq_np).float().to(device)
 
             with torch.no_grad():
@@ -187,10 +207,12 @@ def main(args):
             logits_t = logits_seq[:, t_len - 1, :]
             val_t = vals_seq[:, t_len - 1]
 
+            # Sample action
             dist = torch.distributions.Categorical(logits=logits_t)
             action = dist.sample()
             logp = dist.log_prob(action)
 
+            # Step environment
             obs_next, reward, done, truncated, info = env.step(action.item())
             total_steps += 1
             pbar.update(1)
@@ -202,23 +224,25 @@ def main(args):
             ep_rewards.append(reward)
             ep_dones.append(float(done))
 
+            # Update trackers
             last_action = float(action.item())
             last_reward = float(reward)
             obs_raw = obs_next
 
-            # Boundary bit when phase changes from 1 -> 2
+            # Boundary bit (when switching from Phase1 -> Phase2)
             if hasattr(env.unwrapped, 'maze_core') and env.unwrapped.maze_core.phase == 2 and not phase_boundary_signaled:
                 boundary_bit = 1.0
                 phase_boundary_signaled = True
             else:
                 boundary_bit = 0.0
 
+            # Update progress bar postfix
             pbar.set_postfix({
                 "entropy_coef": f"{ppo_trainer.entropy_coef:.4f}",
                 "last_reward":  f"{reward:.2f}"
             })
 
-            # If episode ended, parse phase stats
+            # If the episode ended, parse phase stats
             if done or truncated:
                 p1_total_rew, p2_total_rew = 0.0, 0.0
                 p1_steps, p2_steps = 0, 0
@@ -329,9 +353,10 @@ def main(args):
         )
 
     # Save final model if specified
-    if args.model_save_path:
-        torch.save(snail.state_dict(), args.model_save_path)
-        tqdm.write(f"Model saved at {args.model_save_path}")
+    if parsed_args.model_save_path:
+        os.makedirs(os.path.dirname(parsed_args.model_save_path), exist_ok=True)
+        torch.save(snail.state_dict(), parsed_args.model_save_path)
+        tqdm.write(f"Model saved at {parsed_args.model_save_path}")
 
     tqdm.write(f"Training finished after {total_steps} steps.")
     env.close()
@@ -354,6 +379,26 @@ def do_update(
     total_steps,
     checkpoint_file
 ):
+    """
+    Perform PPO update and save checkpoint.
+
+    Args:
+        snail_net (SNAILPolicyValueNet): The policy network.
+        trainer (PPOTrainer): The PPO trainer instance.
+        obs_buf (list): Observation buffer.
+        act_buf (list): Action buffer.
+        logp_buf (list): Log-probability buffer.
+        val_buf (list): Value estimates buffer.
+        rew_buf (list): Reward buffer.
+        done_buf (list): Done flag buffer.
+        p1_steps_buf (list): Phase1 steps buffer.
+        p2_steps_buf (list): Phase2 steps buffer.
+        p1_goal_buf (list): Phase1 goal buffer.
+        p2_goal_buf (list): Phase2 goal buffer.
+        device (torch.device): The device to run computations on.
+        total_steps (int): Total training steps completed.
+        checkpoint_file (str): Path to save the checkpoint.
+    """
     from tqdm import tqdm
     import numpy as np
 
@@ -392,6 +437,7 @@ def do_update(
     B, T_ = acts_np.shape
     next_value = 0.0
 
+    # Standardize rewards
     rewards_ = rews_np.reshape(-1)
     dones_ = done_np.reshape(-1)
     values_ = vals_np.reshape(-1)
@@ -408,12 +454,16 @@ def do_update(
 
     adv_1d = adv_2d.reshape(-1)
 
+    # Apply weighting based on phase performance
     p1_s = p1_steps_np.reshape(-1)
     p2_s = p2_steps_np.reshape(-1)
     p1_g = p1_goals_np.reshape(-1).astype(np.float32)
     p2_g = p2_goals_np.reshape(-1).astype(np.float32)
 
+    # Boost case: p2 < p1
     mask_case1 = (p2_s < p1_s).astype(np.float32)
+
+    # Penalty case: no goals in either phase
     mask_case3 = ((p1_g == 0) & (p2_g == 0)).astype(np.float32)
 
     weights = 1.0 + 0.2 * mask_case1 - 0.5 * mask_case3
@@ -423,6 +473,7 @@ def do_update(
     adv_weighted_2d = adv_weighted.reshape(B, T_)
     adv_weighted_2d = (adv_weighted_2d - adv_weighted_2d.mean()) / (adv_weighted_2d.std() + 1e-8)
 
+    # Construct final rollouts
     rollouts = {
         "obs": obs_np,
         "actions": acts_np,
@@ -438,6 +489,15 @@ def do_update(
 
 
 def save_checkpoint(snail_net, trainer, total_steps, checkpoint_file):
+    """
+    Save the current training checkpoint.
+
+    Args:
+        snail_net (SNAILPolicyValueNet): The policy network.
+        trainer (PPOTrainer): The PPO trainer instance.
+        total_steps (int): Total training steps completed.
+        checkpoint_file (str): Path to save the checkpoint.
+    """
     import os
     from tqdm import tqdm
 
@@ -451,5 +511,6 @@ def save_checkpoint(snail_net, trainer, total_steps, checkpoint_file):
 
 
 if __name__ == "__main__":
+    # If running from the command line, parse arguments from sys.argv
     args = parse_args()
     main(args)

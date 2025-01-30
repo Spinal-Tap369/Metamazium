@@ -1,8 +1,8 @@
 # # metamazium/snail_performer/__init__.py
 
-from .cnn_encoder import CNNEncoder
-from .snail_model import SNAILPolicyValueNet
-from .ppo import PPOTrainer
+from metamazium.snail_performer.cnn_encoder import CNNEncoder
+from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
+from metamazium.snail_performer.ppo import PPOTrainer
 
 __all__ = [
     "CNNEncoder",

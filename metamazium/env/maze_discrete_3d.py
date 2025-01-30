@@ -6,9 +6,9 @@ from gymnasium import spaces
 from gymnasium.utils import seeding
 from copy import deepcopy
 
-from env.maze_base import MazeBase
-from env.ray_caster_utils import maze_view
-from env.maze_task import MAZE_TASK_MANAGER
+from metamazium.env.maze_base import MazeBase
+from metamazium.env.ray_caster_utils import maze_view
+from metamazium.env.maze_task import MAZE_TASK_MANAGER
 
 # Define discrete actions: L R D U
 DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
