@@ -1,6 +1,7 @@
 # setup.py
 
 from setuptools import setup, find_packages
+import glob
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
@@ -30,8 +31,8 @@ setup(
         "numba",
         "einops",
         "tqdm",
-        "AxialPositionalEmbedding",  
-        "LocalAttention",            
+        "axial-positional-embedding",  
+        "local-attention",            
         "flash-attn",               
         "jsonschema",               
     ],
@@ -45,12 +46,15 @@ setup(
     entry_points={
         "console_scripts": [
             "generate-mazes=metamazium.scripts.generate_mazes:main",
-            "train-snail=metamazium.scripts.train_snail_performer:main",
+            "train-snail=metamazium.train_model.train_snail_performer:main",
         ],
     },
     include_package_data=True,
     package_data={
-        "metamazium": ["mazes_data/*.json", "metamazium/env/img/*.png"], 
+        "metamazium": ["env/img/*.png"],
     },
+    data_files=[
+        ("mazes_data", glob.glob("mazes_data/*.json")),
+    ],
     zip_safe=False,
 )
