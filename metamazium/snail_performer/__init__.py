@@ -1,4 +1,4 @@
-# snail_performer/__init__.py
+# # metamazium/snail_performer/__init__.py
 
 from .cnn_encoder import CNNEncoder
 from .snail_model import SNAILPolicyValueNet

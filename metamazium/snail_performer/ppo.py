@@ -58,6 +58,12 @@ class PPOTrainer:
         returns_ = rollouts["returns"]
         advantages_ = rollouts["advantages"]
 
+        # future proof - in case this is good!
+        # p1_steps = rollouts.get("p1_steps", None)
+        # p2_steps = rollouts.get("p2_steps", None)
+        # p1_goals = rollouts.get("p1_goals", None)
+        # p2_goals = rollouts.get("p2_goals", None)
+
         # Convert data to tensors on the correct device
         device = next(self.policy_model.parameters()).device
         obs_t = torch.from_numpy(obs).float().to(device)
@@ -94,7 +100,7 @@ class PPOTrainer:
             # Compute value loss and entropy bonus
             value_loss = F.mse_loss(values_1d, returns_1d)
             entropy = dist.entropy().mean()
-            loss = policy_loss + self.value_coef*value_loss - self.entropy_coef*entropy
+            loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
 
             # Backpropagation and optimization step
             self.optimizer.zero_grad()
@@ -103,7 +109,7 @@ class PPOTrainer:
             self.optimizer.step()
 
             # Early stopping based on KL divergence
-            approx_kl = 0.5*torch.mean((new_log_probs_1d - old_log_probs_1d)**2).item()
+            approx_kl = 0.5 * torch.mean((new_log_probs_1d - old_log_probs_1d)**2).item()
             if approx_kl > self.target_kl:
                 print(f"Early stopping at epoch={epoch_i} due to KL={approx_kl:.4f} > {self.target_kl}")
                 break

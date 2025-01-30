@@ -8,10 +8,10 @@ import torch.nn.functional as F
 import json
 from tqdm import tqdm
 
-import env  # Importing custom Maze environment definitions.
-from lstm_ppo.lstm_model import StackedLSTMPolicy
-from lstm_ppo.ppo import PPOTrainer
-from env.maze_task import MazeTaskSampler
+import metamazium.env  # Importing custom Maze environment definitions.
+from metamazium.lstm_ppo.lstm_model import StackedLSTMPolicy
+from metamazium.lstm_ppo.ppo import PPOTrainer
+from metamazium.env.maze_task import MazeTaskSampler
 
 CHECKPOINT_DIR = "checkpoint_lstm"
 CHECKPOINT_FILE = os.path.join(CHECKPOINT_DIR, "lstm_ckpt.pth")

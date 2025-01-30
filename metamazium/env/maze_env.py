@@ -93,7 +93,7 @@ class MetaMazeDiscrete3D(gym.Env):
                 self.need_reset = True
                 terminated = True
                 truncated = False
-                print("Episode Terminated.")
+                # print("Episode Terminated.")
 
                 # Now gather per-phase stats
                 phase1 = self.maze_core.phase_metrics[1]

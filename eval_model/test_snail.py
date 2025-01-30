@@ -4,10 +4,10 @@ import gymnasium as gym
 import numpy as np
 import torch
 import json
-from env.maze_task import MazeTaskSampler
-from snail_performer.snail_model import SNAILPolicyValueNet
-from snail_performer.ppo import PPOTrainer  # not strictly needed here, but just in case
-import env  # Ensure your custom Maze environment is registered
+from metamazium.env.maze_task import MazeTaskSampler
+from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
+from metamazium.snail_performer.ppo import PPOTrainer  
+import metamazium.env  
 
 def main():
     # 1) Load test tasks

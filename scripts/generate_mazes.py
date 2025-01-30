@@ -4,7 +4,7 @@ import os
 import json
 import random
 
-from env.maze_task import MazeTaskSampler
+from metamazium.env.maze_task import MazeTaskSampler
 
 def generate_tasks(n_tasks, size, allow_loops=False, mode="ESCAPE"):
     """

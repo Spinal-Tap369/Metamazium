@@ -7,7 +7,7 @@ import sys
 import time
 import pygame
 
-from env.maze_task import MazeTaskManager, MazeTaskSampler
+from metamazium.env.maze_task import MazeTaskManager, MazeTaskSampler
 from gymnasium.wrappers import FrameStackObservation
 
 DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # Left, Right, Down, Up
