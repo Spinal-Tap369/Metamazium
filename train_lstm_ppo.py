@@ -1,5 +1,6 @@
 # train_lstm_ppo.py
 
+import os
 import gymnasium as gym
 import numpy as np
 import torch
@@ -12,11 +13,15 @@ from lstm_ppo.lstm_model import StackedLSTMPolicy
 from lstm_ppo.ppo import PPOTrainer
 from env.maze_task import MazeTaskSampler
 
+CHECKPOINT_DIR = "checkpoint_lstm"
+CHECKPOINT_FILE = os.path.join(CHECKPOINT_DIR, "lstm_ckpt.pth")
+
 def main():
     """
     Main training loop for the stacked LSTM PPO model in the MetaMaze environment.
-    Loads tasks, initializes the environment and models, collects rollouts,
-    and performs PPO updates until a specified number of timesteps is reached.
+    With:
+      - Entropy schedule from 0.10 -> 0.01 over user-chosen range
+      - Checkpoint saving/loading
     """
     env_id = "MetaMazeDiscrete3D-v0"
     env = gym.make(env_id, enable_render=False)
@@ -28,13 +33,18 @@ def main():
     print(f"Loaded {num_tasks} tasks.")
 
     # Hyperparameters
-    total_timesteps = 1200000
-    steps_per_update = 80000
+    total_timesteps = 1_200_000
+    steps_per_update = 80_000
     gamma = 0.99
     gae_lambda = 0.99
     clip_range = 0.2
     target_kl = 0.03
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Entropy scheduling parameters
+    entropy_coef_start = 0.10
+    entropy_coef_end   = 0.01
+    entropy_anneal_end = 400_000   # The step at which we reach 0.01
 
     # Initialize the stacked LSTM policy network.
     policy_net = StackedLSTMPolicy(
@@ -43,7 +53,7 @@ def main():
         num_layers=2
     ).to(device)
 
-    # Initialize PPO trainer with specified hyperparameters.
+    # Initialize PPO trainer with default entropy (it will be updated each iteration).
     ppo_trainer = PPOTrainer(
         policy_model=policy_net,
         lr=1e-4,
@@ -53,13 +63,28 @@ def main():
         n_epochs=3,
         target_kl=target_kl,
         max_grad_norm=0.5,
-        entropy_coef=0.01,
+        entropy_coef=entropy_coef_start,  # Will be updated each PPO cycle
         value_coef=0.5
     )
 
     total_steps = 0
     task_idx = 0
-    pbar = tqdm(total=total_timesteps, desc="Training")
+
+    # Attempt to load checkpoint if it exists
+    if not os.path.exists(CHECKPOINT_DIR):
+        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    else:
+        if os.path.isfile(CHECKPOINT_FILE):
+            print(f"Found checkpoint at {CHECKPOINT_FILE}, loading...")
+            ckpt = torch.load(CHECKPOINT_FILE, map_location=device)
+            policy_net.load_state_dict(ckpt["policy_state_dict"])
+            ppo_trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            total_steps = ckpt["total_steps"]
+            print(f"Resumed training from step {total_steps}")
+        else:
+            print("No checkpoint file found, starting from scratch.")
+
+    pbar = tqdm(total=total_timesteps, initial=total_steps, desc="Training")
 
     # Buffers for storing rollout data.
     obs_buffer = []
@@ -70,6 +95,11 @@ def main():
     done_buffer = []
 
     while total_steps < total_timesteps:
+        # Update the trainer's entropy coefficient according to linear schedule
+        frac = min(1.0, total_steps / float(entropy_anneal_end))
+        current_entropy_coef = entropy_coef_start + frac * (entropy_coef_end - entropy_coef_start)
+        ppo_trainer.entropy_coef = current_entropy_coef
+
         # Select the next task and configure the environment.
         task_cfg = MazeTaskSampler(**tasks[task_idx])
         env.unwrapped.set_task(task_cfg)
@@ -79,14 +109,16 @@ def main():
         done = False
         truncated = False
 
+        # Reset LSTM memory for new episode
+        policy_net.reset_memory(batch_size=1, device=device)
+
         # Initialize variables for additional channels.
         last_action = 0.0
         last_reward = 0.0
         boundary_bit = 1.0
         phase_boundary_signaled = False
 
-        # Temporary storage for episode data.
-        ep_obs_seq = []  # List to store sequence of observations with 6 channels.
+        ep_obs_seq = []
         ep_actions = []
         ep_logprobs = []
         ep_values = []
@@ -94,61 +126,46 @@ def main():
         ep_dones = []
 
         while not done and not truncated and total_steps < total_timesteps:
-            # Construct a 6-channel observation by combining image data with additional information.
-            obs_img = np.transpose(obs_raw, (2, 0, 1))  # Convert to shape (3, H, W).
+            # Construct a 6-channel observation
+            obs_img = np.transpose(obs_raw, (2, 0, 1))  # (3, H, W)
             H, W = obs_img.shape[1], obs_img.shape[2]
             c3 = np.full((1, H, W), last_action, dtype=np.float32)
             c4 = np.full((1, H, W), last_reward, dtype=np.float32)
             c5 = np.full((1, H, W), boundary_bit, dtype=np.float32)
-            obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)  # Shape: (6, H, W)
+            obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)
 
-            # Append the 6-channel observation to the episode sequence.
             ep_obs_seq.append(obs_6ch)
-            t_len = len(ep_obs_seq)
 
-            # Prepare input tensor for the current sequence.
-            obs_seq_np = np.stack(ep_obs_seq, axis=0)  # Shape: (t_len, 6, H, W)
-            obs_seq_np = obs_seq_np[None]             # Add batch dimension: (1, t_len, 6, H, W)
-            obs_seq_torch = torch.from_numpy(obs_seq_np).float().to(device)
-
-            # Obtain policy logits and value estimates for the current sequence.
+            # Convert to shape (1,1,6,H,W) for a single step forward
+            obs_t = torch.from_numpy(obs_6ch[None, None]).float().to(device)
             with torch.no_grad():
-                logits_seq, vals_seq = policy_net(obs_seq_torch)
-
-            # Select the logits and value corresponding to the latest timestep.
-            logits_t = logits_seq[:, t_len-1, :]  # Shape: (1, action_dim)
-            val_t = vals_seq[:, t_len-1]         # Shape: (1,)
-
-            # Sample an action from the policy distribution.
+                logits_t, val_t = policy_net.act_single_step(obs_t)
             dist = torch.distributions.Categorical(logits=logits_t)
             action = dist.sample()
             logp = dist.log_prob(action)
 
-            # Execute the action in the environment.
             obs_next, reward, done, truncated, info = env.step(action.item())
             total_steps += 1
             pbar.update(1)
 
-            # Store experience from the current timestep.
+            # Store experience
             ep_actions.append(action.item())
             ep_logprobs.append(logp.item())
             ep_values.append(val_t.item())
             ep_rewards.append(reward)
             ep_dones.append(float(done))
 
-            # Update variables for the next iteration.
             last_action = float(action.item())
             last_reward = float(reward)
             obs_raw = obs_next
 
-            # Signal phase boundary if transitioning from phase 1 to phase 2.
             if env.unwrapped.maze_core.phase == 2 and not phase_boundary_signaled:
                 boundary_bit = 1.0
                 phase_boundary_signaled = True
             else:
                 boundary_bit = 0.0
 
-        # After episode ends, accumulate episode data into main buffers.
+        # Accumulate into main buffers
         obs_buffer += ep_obs_seq
         act_buffer += ep_actions
         logp_buffer += ep_logprobs
@@ -156,11 +173,10 @@ def main():
         rew_buffer += ep_rewards
         done_buffer += ep_dones
 
-        # Perform a PPO update once enough data is collected.
         if len(obs_buffer) >= steps_per_update:
             do_update(policy_net, ppo_trainer,
                       obs_buffer, act_buffer, logp_buffer,
-                      val_buffer, rew_buffer, done_buffer, device)
+                      val_buffer, rew_buffer, done_buffer, device, total_steps)
             obs_buffer.clear()
             act_buffer.clear()
             logp_buffer.clear()
@@ -171,85 +187,88 @@ def main():
     pbar.close()
     env.close()
 
-    # Perform a final update if there is any remaining data.
+    # Final PPO update
     if len(obs_buffer) > 0:
         do_update(policy_net, ppo_trainer,
                   obs_buffer, act_buffer, logp_buffer,
-                  val_buffer, rew_buffer, done_buffer, device)
+                  val_buffer, rew_buffer, done_buffer, device, total_steps)
 
-    # Save the trained policy model.
-    torch.save(policy_net.state_dict(), "models/lstm_stacked_online.pt")
+    # Save final model
+    save_checkpoint(policy_net, ppo_trainer, total_steps)
     print(f"Training finished after {total_steps} steps.")
+
 
 def do_update(policy_net, trainer,
               obs_buf, act_buf, logp_buf,
-              val_buf, rew_buf, done_buf, device):
+              val_buf, rew_buf, done_buf, device, total_steps):
     """
-    Conducts a PPO update using collected rollout buffers.
-
-    Steps:
-      1. Reshape observation data to shape (1, T, 6, H, W).
-      2. Compute Generalized Advantage Estimation (GAE).
-      3. Invoke the trainer's update method with the prepared rollout data.
-
-    Args:
-        policy_net (nn.Module): The policy network.
-        trainer (PPOTrainer): The PPO trainer instance.
-        obs_buf (list): List of observation arrays.
-        act_buf (list): List of actions taken.
-        logp_buf (list): List of log probabilities of actions.
-        val_buf (list): List of value estimates.
-        rew_buf (list): List of rewards received.
-        done_buf (list): List of done flags.
-        device (torch.device): The device to run computations on.
+    Conducts a PPO update using collected rollout buffers,
+    standardizes the rewards, and saves checkpoint after update.
     """
     T = len(obs_buf)
     if T < 2:
         return
 
-    # Convert buffers into NumPy arrays with appropriate shapes.
-    obs_np = np.stack(obs_buf, axis=0)  # Shape: (T, 6, H, W)
-    obs_np = obs_np[None]               # Shape: (1, T, 6, H, W)
-    acts_np = np.array(act_buf, dtype=np.int64)[None]     # Shape: (1, T)
-    logp_np = np.array(logp_buf, dtype=np.float32)[None]  # Shape: (1, T)
-    vals_np = np.array(val_buf, dtype=np.float32)[None]   # Shape: (1, T)
-    rews_np = np.array(rew_buf, dtype=np.float32)[None]   # Shape: (1, T)
-    done_np = np.array(done_buf, dtype=np.float32)[None]  # Shape: (1, T)
+    obs_np = np.stack(obs_buf, axis=0)[None]      # (1,T,6,H,W)
+    acts_np = np.array(act_buf, dtype=np.int64)[None]
+    logp_np = np.array(logp_buf, dtype=np.float32)[None]
+    vals_np = np.array(val_buf, dtype=np.float32)[None]
+    rews_np = np.array(rew_buf, dtype=np.float32)[None]
+    done_np = np.array(done_buf, dtype=np.float32)[None]
 
     B, T_ = acts_np.shape
-    next_value = 0.0  # No next value if the final step was terminal.
+    next_value = 0.0
 
-    # Flatten rewards, dones, and values for GAE computation.
     rewards_ = rews_np.reshape(-1)
-    dones_ = done_np.reshape(-1)
-    values_ = vals_np.reshape(-1)
+    dones_   = done_np.reshape(-1)
+    values_  = vals_np.reshape(-1)
 
-    # standardize rewards
+    # Standardize rewards
     mean_r = np.mean(rewards_)
     std_r  = np.std(rewards_) + 1e-6
     rewards_ = (rewards_ - mean_r) / std_r
 
-    # Compute advantages and returns.
-    advantages_ = trainer.compute_gae(rewards_, dones_, values_, next_value)
+    advantages_ = trainer.compute_gae(
+        rewards=rewards_,
+        dones=dones_,
+        values=values_,
+        next_value=next_value
+    )
     returns_ = values_ + advantages_
 
-    # Reshape advantages and returns to match expected dimensions.
     adv_2d = advantages_.reshape(B, T_)
     ret_2d = returns_.reshape(B, T_)
 
-    # Prepare the rollout dictionary required by the PPO update.
     rollouts = {
-        "obs": obs_np,             # Shape: (1, T, 6, H, W)
-        "actions": acts_np,        # Shape: (1, T)
-        "old_log_probs": logp_np,  # Shape: (1, T)
-        "returns": ret_2d,         # Shape: (1, T)
-        "values": vals_np,         # Shape: (1, T)
-        "advantages": adv_2d       # Shape: (1, T)
+        "obs": obs_np,
+        "actions": acts_np,
+        "old_log_probs": logp_np,
+        "returns": ret_2d,
+        "values": vals_np,
+        "advantages": adv_2d
     }
 
-    # Execute the PPO update and display statistics.
     stats = trainer.update(rollouts)
     print("[PPO Update]", stats)
+
+    # Save checkpoint each update
+    save_checkpoint(policy_net, trainer, total_steps)
+
+
+def save_checkpoint(policy_net, trainer, total_steps):
+    """
+    Saves the checkpoint to the disk, including policy + optimizer states + total steps.
+    """
+    if not os.path.exists(CHECKPOINT_DIR):
+        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+    torch.save({
+        "policy_state_dict": policy_net.state_dict(),
+        "optimizer_state_dict": trainer.optimizer.state_dict(),
+        "total_steps": total_steps
+    }, CHECKPOINT_FILE)
+    print(f"Checkpoint saved at step {total_steps} -> {CHECKPOINT_FILE}")
+
 
 if __name__ == "__main__":
     main()

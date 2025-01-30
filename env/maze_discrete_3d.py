@@ -10,8 +10,8 @@ from env.maze_base import MazeBase
 from env.ray_caster_utils import maze_view
 from env.maze_task import MAZE_TASK_MANAGER
 
-# Define discrete actions: Left, Right, Down, Up
-DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # Left, Right, Down, Up
+# Define discrete actions: L R D U
+DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
 class MazeCoreDiscrete3D(MazeBase):
     """
@@ -78,7 +78,7 @@ class MazeCoreDiscrete3D(MazeBase):
             2: {"goal_rewards": 0.0, "steps": 0, "step_rewards": 0.0,
                 "collisions": 0, "collision_rewards": 0.0}
         }
-
+        self._gave_exploration_bonus = False
         return observation
 
     def do_action(self, action):
@@ -165,6 +165,7 @@ class MazeCoreDiscrete3D(MazeBase):
                 if agent_at_goal and not self._gave_exploration_bonus:
                     bonus = 0.5
                     reward += bonus
+                    self.phase_metrics[1]["goal_rewards"] += self._goal_reward  # goal reward
                     self._gave_exploration_bonus = True
                     # print("Exploration bonus of", bonus, "awarded!")
                 done = False
