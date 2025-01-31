@@ -51,10 +51,14 @@ setup(
     },
     include_package_data=True,
     package_data={
-        "metamazium": ["env/img/*.png"],
+        "metamazium": [
+            "env/img/*.png",          # Include all PNG images in env/img/
+            "mazes_data/*.json",      # Include all JSON files in mazes_data/
+        ],
     },
-    data_files=[
-        ("mazes_data", glob.glob("mazes_data/*.json")),
-    ],
+    # Remove data_files as it's not needed for package-internal data
+    # data_files=[
+    #     ("mazes_data", glob.glob("mazes_data/*.json")),
+    # ],
     zip_safe=False,
 )

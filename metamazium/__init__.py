@@ -2,6 +2,7 @@
 
 # Importing environment-related modules
 from metamazium.env.maze_env import MetaMazeDiscrete3D
+import gymnasium as gym
 
 # Importing Performer components
 from metamazium.performer.performer_pytorch import PerformerLM, Performer, SelfAttention, CrossAttention
@@ -15,7 +16,6 @@ from metamazium.snail_performer.cnn_encoder import CNNEncoder
 
 
 __all__ = [
-    'MetaMazeContinuous3D',
     'MetaMazeDiscrete3D',
     'MetaMaze2D',
     'PerformerLM',
