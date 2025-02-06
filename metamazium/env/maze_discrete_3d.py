@@ -17,6 +17,13 @@ class MazeCoreDiscrete3D(MazeBase):
     """
     Core logic for the discrete 3D maze environment.
     Handles agent movement, phase transitions, and reward calculations.
+    
+    This version only uses:
+      1. A step penalty (self._step_reward)
+      2. A collision penalty (self.collision_penalty)
+      3. A goal reward (self._goal_reward)
+    All other incentives (exploration bonus, new cell bonus, visited cell penalty)
+    have been removed.
     """
     def __init__(
             self,
@@ -47,64 +54,44 @@ class MazeCoreDiscrete3D(MazeBase):
 
         self.collision_penalty = collision_penalty  # negative penalty for collision
 
-        # Phase metrics including new-cell and visited-cell metrics.
+        # Phase metrics (only keeping step rewards, collisions, and goal rewards)
         self.phase_metrics = {
             1: {
                 "goal_rewards": 0.0,
                 "steps": 0,
                 "step_rewards": 0.0,
                 "collisions": 0,
-                "collision_rewards": 0.0,
-                "visited_penalties_count": 0,
-                "visited_penalties_total": 0.0,
-                "new_cell_count": 0,
-                "new_cell_reward_total": 0.0
+                "collision_rewards": 0.0
             },
             2: {
                 "goal_rewards": 0.0,
                 "steps": 0,
                 "step_rewards": 0.0,
                 "collisions": 0,
-                "collision_rewards": 0.0,
-                "visited_penalties_count": 0,
-                "visited_penalties_total": 0.0,
-                "new_cell_count": 0,
-                "new_cell_reward_total": 0.0
+                "collision_rewards": 0.0
             }
         }
 
         # Base rewards (can be overridden via task config)
         self._step_reward = -0.01         # per timestep
         self._goal_reward = 1.0           # reward for reaching the goal
-        self._exploration_bonus = 0.5     # bonus for reaching goal in phase 1
-        # New cell bonus vs. revisited cell penalty:
-        self._new_cell_bonus = +0.05
-        self._visited_cell_penalty = -0.005
 
     def reset(self):
         observation = super(MazeCoreDiscrete3D, self).reset()
         self._starting_position = deepcopy(self._agent_grid)
-        # Initialize visited cells set (using grid index tuples)
-        self._visited_cells = set()
-        self._visited_cells.add(tuple(self._agent_grid))
-        # Reset phase metrics including new-cell metrics
+        # (Visited cells are not used in this simplified reward scheme.)
         self.phase_metrics = {
             1: {"goal_rewards": 0.0, "steps": 0, "step_rewards": 0.0,
-                "collisions": 0, "collision_rewards": 0.0,
-                "visited_penalties_count": 0, "visited_penalties_total": 0.0,
-                "new_cell_count": 0, "new_cell_reward_total": 0.0},
+                "collisions": 0, "collision_rewards": 0.0},
             2: {"goal_rewards": 0.0, "steps": 0, "step_rewards": 0.0,
-                "collisions": 0, "collision_rewards": 0.0,
-                "visited_penalties_count": 0, "visited_penalties_total": 0.0,
-                "new_cell_count": 0, "new_cell_reward_total": 0.0}
+                "collisions": 0, "collision_rewards": 0.0}
         }
-        self._gave_exploration_bonus = False
         return observation
 
     def do_action(self, action):
         """
         Executes the given (turn, step) action.
-        Applies base step reward, collision penalty, and exploration incentives.
+        Applies the base step penalty, collision penalty, and goal reward.
         """
         assert isinstance(action, tuple) and len(action) == 2
         direction, step = action
@@ -112,49 +99,28 @@ class MazeCoreDiscrete3D(MazeBase):
         self.turn(direction)
         old_grid = deepcopy(self._agent_grid)
         self.move(step)
-        collision = np.array_equal(old_grid, self._agent_grid)
+        # Only consider it a collision if the step was nonzero and the grid didn't change
+        collision = (step != 0) and np.array_equal(old_grid, self._agent_grid)
         self.phase_metrics[self.phase]["steps"] += 1
         self.current_phase_steps += 1
-
-        # Check visited vs. new cell
-        cell_tuple = tuple(self._agent_grid)
-        if cell_tuple in self._visited_cells:
-            visited_penalty = self._visited_cell_penalty
-            self.phase_metrics[self.phase]["visited_penalties_count"] += 1
-            self.phase_metrics[self.phase]["visited_penalties_total"] += visited_penalty
-            new_cell_reward = 0.0
-        else:
-            visited_penalty = 0.0
-            new_cell_reward = self._new_cell_bonus
-            self.phase_metrics[self.phase]["new_cell_count"] += 1
-            self.phase_metrics[self.phase]["new_cell_reward_total"] += new_cell_reward
-            self._visited_cells.add(cell_tuple)
 
         # Get base reward and done flag from evaluation_rule.
         reward, done = self.evaluation_rule()
 
-        # Apply collision penalty.
+        # Apply collision penalty only if there was an actual attempted movement
         if collision:
             reward += self.collision_penalty
             self.phase_metrics[self.phase]["collisions"] += 1
             self.phase_metrics[self.phase]["collision_rewards"] += self.collision_penalty
-
-        # Apply visited/new cell incentive.
-        reward += (visited_penalty + new_cell_reward)
 
         # Check if agent reached the goal.
         agent_at_goal = (tuple(self._agent_grid) == self._goal)
         if self.task_type == "ESCAPE":
             if agent_at_goal:
                 if self.phase == 1:
-                    if not self._gave_exploration_bonus:
-                        reward += self._exploration_bonus
-                        self.phase_metrics[1]["goal_rewards"] += self._goal_reward
-                        self._gave_exploration_bonus = True
+                    self.phase_metrics[1]["goal_rewards"] += self._goal_reward
                     self.phase = 2
                     self.current_phase_steps = 0
-                    self._visited_cells = set()
-                    self._visited_cells.add(tuple(self._agent_grid))
                     self._agent_grid = deepcopy(self._starting_position)
                     self._agent_loc = self.get_cell_center(self._agent_grid)
                     done = False
@@ -167,8 +133,6 @@ class MazeCoreDiscrete3D(MazeBase):
             self.current_phase_steps = 0
             self._agent_grid = deepcopy(self._starting_position)
             self._agent_loc = self.get_cell_center(self._agent_grid)
-            self._visited_cells = set()
-            self._visited_cells.add(tuple(self._agent_grid))
             done = False
             self.update_observation()
         elif self.phase == 2 and self.current_phase_steps >= self.phase_step_limit:
@@ -180,6 +144,9 @@ class MazeCoreDiscrete3D(MazeBase):
     def evaluation_rule(self):
         """
         Determines the base reward and termination flag.
+        For the ESCAPE task:
+          - In Phase 1: always applies the step penalty.
+          - In Phase 2: applies the step penalty and adds the goal reward if the agent reaches the goal.
         """
         self.steps += 1
         self._agent_trajectory.append(np.copy(self._agent_grid))
@@ -283,7 +250,6 @@ class MazeCoreDiscrete3D(MazeBase):
         (i.e. where _cell_walls == 0) and updates the agent's grid.
         """
         valid_cells = [ (i, j) for i in range(self._n) for j in range(self._n) if self._cell_walls[i, j] == 0 ]
-        # Choose a random valid cell (make sure it is not the goal)
         new_start = None
         while True:
             candidate = valid_cells[np.random.randint(0, len(valid_cells))]
@@ -292,6 +258,4 @@ class MazeCoreDiscrete3D(MazeBase):
                 break
         self._agent_grid = np.array(new_start)
         self._agent_loc = self.get_cell_center(self._agent_grid)
-        # Also update the stored spawn location if desired
         self._starting_position = deepcopy(self._agent_grid)
-

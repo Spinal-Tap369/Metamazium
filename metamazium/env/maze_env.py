@@ -81,6 +81,8 @@ class MetaMazeDiscrete3D(gym.Env):
                 truncated = False
                 phase1 = self.maze_core.phase_metrics[1]
                 phase2 = self.maze_core.phase_metrics[2]
+                phase1_total = phase1["step_rewards"] + phase1["goal_rewards"] + phase1["collision_rewards"]
+                phase2_total = phase2["step_rewards"] + phase2["goal_rewards"] + phase2["collision_rewards"]
                 reports = {
                     "Phase1": {
                         "Goal Rewards": phase1["goal_rewards"],
@@ -88,10 +90,7 @@ class MetaMazeDiscrete3D(gym.Env):
                         "Total Step Rewards": phase1["step_rewards"],
                         "Total Collisions": phase1["collisions"],
                         "Total Collision Rewards": phase1["collision_rewards"],
-                        "Visited Penalties Count": phase1.get("visited_penalties_count", 0),
-                        "Visited Penalties Total": phase1.get("visited_penalties_total", 0.0),
-                        "New Cell Count": phase1.get("new_cell_count", 0),
-                        "New Cell Reward Total": phase1.get("new_cell_reward_total", 0.0)
+                        "Total Reward": phase1_total
                     },
                     "Phase2": {
                         "Goal Rewards": phase2["goal_rewards"],
@@ -99,10 +98,7 @@ class MetaMazeDiscrete3D(gym.Env):
                         "Total Step Rewards": phase2["step_rewards"],
                         "Total Collisions": phase2["collisions"],
                         "Total Collision Rewards": phase2["collision_rewards"],
-                        "Visited Penalties Count": phase2.get("visited_penalties_count", 0),
-                        "Visited Penalties Total": phase2.get("visited_penalties_total", 0.0),
-                        "New Cell Count": phase2.get("new_cell_count", 0),
-                        "New Cell Reward Total": phase2.get("new_cell_reward_total", 0.0)
+                        "Total Reward": phase2_total
                     }
                 }
             else:

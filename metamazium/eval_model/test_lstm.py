@@ -6,7 +6,7 @@ import torch
 import json
 import os
 from metamazium.env.maze_task import MazeTaskSampler
-from metamazium.lstm_trpo.lstm_model import StackedLSTMPolicy
+from metamazium.lstm_trpo.lstm_model import StackedLSTMPolicyValueNet
 import metamazium.env  
 
 
@@ -24,14 +24,14 @@ def main():
 
     # 3) Load your trained LSTM model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    lstm_model = StackedLSTMPolicy(
+    lstm_model = StackedLSTMPolicyValueNet(
         action_dim=4,
         hidden_size=512,
         num_layers=2
     ).to(device)
 
     # Load state dict from checkpoint
-    checkpoint_path = "checkpoint_lstm/custom_lstm_ckpt.pth"
+    checkpoint_path = "models/trpo_ckpt.pth"
     if not os.path.isfile(checkpoint_path):
         print(f"Error: Checkpoint file not found at {checkpoint_path}")
         return
