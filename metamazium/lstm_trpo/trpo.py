@@ -143,7 +143,8 @@ def build_hessian_vector_product(loss, param_list, damping):
     
     def hvp_func(v):
         v = v.clone().detach().requires_grad_(True)
-        Hv = flat_grad((grads * v).sum(), param_list, retain_graph=True)
+        with torch.backends.cudnn.flags(enabled=False):
+            Hv = flat_grad((grads * v).sum(), param_list, retain_graph=True)
         return Hv + damping * v
     
     return grads, hvp_func
