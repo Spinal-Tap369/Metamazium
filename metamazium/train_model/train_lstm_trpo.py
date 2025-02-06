@@ -303,6 +303,7 @@ def main(args=None):
             save_checkpoint(policy_net, trpo_trainer, total_steps, CHECKPOINT_DIR)
             replay_buffer.clear()
             steps_since_update = 0
+            torch.cuda.empty_cache()
 
         if total_steps % (STEPS_PER_UPDATE * 2) == 0:
             save_checkpoint(policy_net, trpo_trainer, total_steps, CHECKPOINT_DIR)
