@@ -1,6 +1,5 @@
 # train_model/train_snail_performer.py
 
-# train_model/train_snail_performer.py
 
 import os
 import argparse
@@ -11,14 +10,11 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-import metamazium.env  # Import custom Maze environment definitions.
+import metamazium.env  
 from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
 from metamazium.snail_performer.ppo import PPOTrainer
 from metamazium.env.maze_task import MazeTaskSampler
 
-# ---------------------------------------------------------------------------
-# Standard Reward Normalizer using EMA for mean/variance.
-# ---------------------------------------------------------------------------
 class StandardRewardNormalizer:
     def __init__(self, alpha=0.01, epsilon=1e-6):
         self.alpha = alpha
@@ -40,9 +36,7 @@ class StandardRewardNormalizer:
         std = np.sqrt(self.var) if self.var is not None else 1.0
         return (rewards - self.mean) / (std + self.epsilon)
 
-# ---------------------------------------------------------------------------
-# Argument Parsing
-# ---------------------------------------------------------------------------
+
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
         description="Train SNAIL Performer on MetaMaze environment."
@@ -62,9 +56,7 @@ def parse_args(args=None):
     parser.add_argument("--model_save_path", type=str, default=None, help="Path to save the final model.")
     return parser.parse_args(args)
 
-# ---------------------------------------------------------------------------
-# Main Training Function
-# ---------------------------------------------------------------------------
+
 def main(args=None):
     parsed_args = parse_args(args)
     
@@ -224,8 +216,6 @@ def main(args=None):
                 "last_reward": f"{reward:.2f}"
             })
 
-            # Optionally, you can also update the progress bar with phase-specific stats
-            # by reading info["phase_reports"] if your environment returns those.
 
         # End of episode: add rollout to buffers.
         obs_buffer.extend(ep_obs_seq)
@@ -261,9 +251,6 @@ def main(args=None):
     save_checkpoint(snail, ppo_trainer, total_steps, parsed_args)
     print(f"Training finished after {total_steps} steps.")
 
-# ---------------------------------------------------------------------------
-# PPO Update Function (no extra advantage weighting)
-# ---------------------------------------------------------------------------
 def do_update(policy_net, trainer,
               obs_buf, act_buf, logp_buf,
               val_buf, rew_buf, done_buf,

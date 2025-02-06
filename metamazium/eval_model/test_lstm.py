@@ -6,8 +6,7 @@ import torch
 import json
 import os
 from metamazium.env.maze_task import MazeTaskSampler
-from metamazium.lstm_ppo.lstm_model import StackedLSTMPolicy
-from metamazium.lstm_ppo.ppo import PPOTrainer
+from metamazium.lstm_trpo.lstm_model import StackedLSTMPolicy
 import metamazium.env  
 
 

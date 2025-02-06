@@ -104,7 +104,7 @@ class StackedLSTMPolicyValueNet(nn.Module):
         rnn_state: (hidden, cell)
         Returns: (values, new_rnn_state)
         """
-        # We can ignore prev_action / prev_reward or incorporate them if needed.
+       
         policy_logits, values, new_rnn_state = self.forward_with_state(obs, rnn_state)
         return values, new_rnn_state
 
@@ -125,9 +125,7 @@ class StackedLSTMPolicyValueNet(nn.Module):
 
         return dist, log_prob, new_rnn_state
 
-    # ------------------------------------------------------------------------
     # Separate parameter lists for policy vs. value
-    # ------------------------------------------------------------------------
     def policy_parameters(self):
         """
         Return a list of parameters that affect the policy output.

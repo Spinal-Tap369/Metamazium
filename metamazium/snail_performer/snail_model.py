@@ -65,7 +65,7 @@ class SnailSelfAttnBlock(nn.Module):
             heads=num_heads,
             dim_head=max(1, embed_dim // num_heads),
             causal=True,
-            local_heads=local_heads,  # rename from local_attn_heads -> local_heads
+            local_heads=local_heads, 
             dropout=dropout
         )
         self.out_dim = in_dim + embed_dim
@@ -100,13 +100,13 @@ class SNAILPolicyValueNet(nn.Module):
         self.base_dim = base_dim
         self.seq_len = seq_len
 
-        # -------------- Policy --------------
+        # Policy
         self.policy_block1 = TCBlock(in_dim=base_dim, seq_len=seq_len, filters=policy_filters)
         self.attn1 = SnailSelfAttnBlock(
             in_dim=self.policy_block1.out_dim,
             embed_dim=policy_attn_dim,
             num_heads=num_heads,
-            local_heads=0    # or set local_heads if you want local attention
+            local_heads=0    
         )
         self.policy_block2 = TCBlock(in_dim=self.attn1.out_dim, seq_len=seq_len, filters=policy_filters)
         self.attn2 = SnailSelfAttnBlock(
@@ -118,7 +118,7 @@ class SNAILPolicyValueNet(nn.Module):
         self.policy_out_dim = self.attn2.out_dim
         self.policy_head = nn.Conv1d(self.policy_out_dim, action_dim, kernel_size=1)
 
-        # -------------- Value --------------
+        #  Value 
         self.value_block1 = TCBlock(in_dim=base_dim, seq_len=seq_len, filters=value_filters)
         self.value_block2 = TCBlock(in_dim=self.value_block1.out_dim, seq_len=seq_len, filters=value_filters)
         self.value_out_dim = self.value_block2.out_dim
