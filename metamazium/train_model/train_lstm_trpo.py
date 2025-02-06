@@ -18,6 +18,7 @@ import copy
 import time
 import argparse
 
+# Enable anomaly detection (set to False for production)
 torch.autograd.set_detect_anomaly(False)
 
 import metamazium.env
@@ -25,7 +26,9 @@ from metamazium.lstm_trpo.lstm_model import StackedLSTMPolicyValueNet
 from metamazium.lstm_trpo.trpo import TRPO
 from metamazium.env.maze_task import MazeTaskSampler
 
-# Default hyperparameters
+# ---------------------------------------------------------------------------
+# Default Hyperparameters
+# ---------------------------------------------------------------------------
 DEFAULT_TOTAL_TIMESTEPS = 100000
 DEFAULT_STEPS_PER_UPDATE = 30000  
 DEFAULT_GAMMA = 0.99
@@ -39,14 +42,10 @@ DEFAULT_ENTROPY_COEF = 0.01
 DEFAULT_CHECKPOINT_DIR = "checkpoint_trpo"
 DEFAULT_CHECKPOINT_FILE = None
 
-
+# ---------------------------------------------------------------------------
+# Argument Parser
+# ---------------------------------------------------------------------------
 def parse_args():
-    """
-    Parse command-line arguments.
-    
-    Returns:
-        argparse.Namespace: Parsed command-line arguments.
-    """
     parser = argparse.ArgumentParser(
         description="Train LSTM-TRPO on MetaMaze environment."
     )
@@ -60,18 +59,10 @@ def parse_args():
                         help="File to load checkpoint from (default: None)")
     return parser.parse_args()
 
-
+# ---------------------------------------------------------------------------
+# Utility Functions
+# ---------------------------------------------------------------------------
 def pad_trials(trial_list, pad_value=0.0):
-    """
-    Pad each trial in the list to the same length and stack them.
-    
-    Args:
-        trial_list (list[np.ndarray]): List of trial arrays.
-        pad_value (float): Value to pad with (default: 0.0).
-    
-    Returns:
-        np.ndarray: Array with shape (num_trials, max_trial_length, ...).
-    """
     if not trial_list:
         return np.array([])
     max_T = max(trial.shape[0] for trial in trial_list)
@@ -86,36 +77,16 @@ def pad_trials(trial_list, pad_value=0.0):
         padded_trials.append(trial_padded)
     return np.stack(padded_trials, axis=0)
 
-
 def _batch_rnn_state(rnn_state_list):
-    """
-    Batch a list of RNN state tuples (hidden, cell) into a single tuple.
-    
-    Args:
-        rnn_state_list (list[tuple[torch.Tensor, torch.Tensor]]): List of (hidden, cell) states.
-    
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: Batched (hidden, cell) states.
-    """
     if not rnn_state_list:
         return None
     h_list = [state[0] for state in rnn_state_list]
     c_list = [state[1] for state in rnn_state_list]
     batched_hidden = torch.stack(h_list, dim=1).squeeze(2)
     batched_cell = torch.stack(c_list, dim=1).squeeze(2)
-    return batched_hidden, batched_cell
-
+    return (batched_hidden, batched_cell)
 
 def save_checkpoint(policy_net, trainer, total_steps, checkpoint_dir):
-    """
-    Save a checkpoint of the model and training progress.
-    
-    Args:
-        policy_net (torch.nn.Module): The policy network.
-        trainer (TRPO): The TRPO trainer instance.
-        total_steps (int): Total training steps completed.
-        checkpoint_dir (str): Directory in which to save the checkpoint.
-    """
     checkpoint_file = os.path.join(checkpoint_dir, "trpo_ckpt.pth")
     torch.save({
         "policy_state_dict": policy_net.state_dict(),
@@ -123,14 +94,10 @@ def save_checkpoint(policy_net, trainer, total_steps, checkpoint_dir):
     }, checkpoint_file)
     print(f"Checkpoint saved at step {total_steps} -> {checkpoint_file}")
 
-
+# ---------------------------------------------------------------------------
+# Main Training Function
+# ---------------------------------------------------------------------------
 def main(args=None):
-    """
-    Main training function for the LSTM-TRPO agent.
-    
-    Args:
-        args (argparse.Namespace, optional): Parsed command-line arguments.
-    """
     if args is None:
         args = parse_args()
 
@@ -148,7 +115,7 @@ def main(args=None):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Initialize policy network and TRPO trainer
+    # Initialize network and TRPO trainer.
     policy_net = StackedLSTMPolicyValueNet(action_dim=4, hidden_size=512, num_layers=2).to(device)
     trpo_trainer = TRPO(
         policy=policy_net,
@@ -182,12 +149,12 @@ def main(args=None):
     pbar = tqdm(total=TOTAL_TIMESTEPS, initial=total_steps, desc="Training")
 
     while total_steps < TOTAL_TIMESTEPS:
-        # Set task
+        # 1) Set the Task (Maze)
         task_cfg = MazeTaskSampler(**tasks[task_idx])
         env.unwrapped.set_task(task_cfg)
         task_idx = (task_idx + 1) % len(tasks)
 
-        # Reset environment and RNN memory
+        # 2) Reset environment + LSTM
         policy_net.reset_memory(batch_size=1, device=device)
         obs_raw, _ = env.reset()
         env.unwrapped.maze_core.randomize_start()
@@ -204,7 +171,7 @@ def main(args=None):
         trial_values = []
         trial_log_probs = []
 
-        # Run one trial
+        # 3) Run the Trial to completion.
         while not done and not truncated and total_steps < TOTAL_TIMESTEPS:
             obs_img = np.transpose(obs_raw, (2, 0, 1))
             H, W = obs_img.shape[1], obs_img.shape[2]
@@ -231,10 +198,12 @@ def main(args=None):
             total_steps += 1
             steps_since_update += 1
             pbar.update(1)
+
             last_action = float(action.item())
             last_reward = float(reward)
             obs_raw = obs_next
 
+        # End of trial: clear temporary trial buffers.
         trial_states = np.array(trial_states, dtype=np.float32)
         trial_actions = np.array(trial_actions, dtype=np.int64)
         trial_rewards = np.array(trial_rewards, dtype=np.float32)
@@ -249,7 +218,10 @@ def main(args=None):
             'log_probs': trial_log_probs
         })
 
-        # Update policy using TRPO if enough steps have been collected
+        #  clear cache after each trial to release unused memory.
+        torch.cuda.empty_cache()
+
+        # 4) TRPO update if enough steps have been collected.
         if steps_since_update >= STEPS_PER_UPDATE:
             rollouts = []
             for data in replay_buffer:
@@ -300,13 +272,18 @@ def main(args=None):
             print(f"[TRPO UPDATE] Steps: {total_steps}, KL: {trpo_trainer.current_kl:.4f}, "
                   f"Policy Loss: {policy_loss:.4f}, Value Loss: {final_vloss:.4f}")
 
+            # Save checkpoint immediately after update.
             save_checkpoint(policy_net, trpo_trainer, total_steps, CHECKPOINT_DIR)
+
+            # Clear replay buffer and reset update counter.
             replay_buffer.clear()
             steps_since_update = 0
             torch.cuda.empty_cache()
 
+        # save periodic checkpoints.
         if total_steps % (STEPS_PER_UPDATE * 2) == 0:
             save_checkpoint(policy_net, trpo_trainer, total_steps, CHECKPOINT_DIR)
+            torch.cuda.empty_cache()
 
     pbar.close()
     env.close()
