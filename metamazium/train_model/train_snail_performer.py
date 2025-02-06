@@ -1,5 +1,7 @@
 # train_model/train_snail_performer.py
 
+# train_model/train_snail_performer.py
+
 import os
 import argparse
 import json
@@ -9,108 +11,97 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-import metamazium.env
-
-# Import from your metamazium package
-from metamazium.env.maze_task import MazeTaskSampler
+import metamazium.env  # Import custom Maze environment definitions.
 from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
 from metamazium.snail_performer.ppo import PPOTrainer
+from metamazium.env.maze_task import MazeTaskSampler
 
+# ---------------------------------------------------------------------------
+# Standard Reward Normalizer using EMA for mean/variance.
+# ---------------------------------------------------------------------------
+class StandardRewardNormalizer:
+    def __init__(self, alpha=0.01, epsilon=1e-6):
+        self.alpha = alpha
+        self.epsilon = epsilon
+        self.mean = None
+        self.var = None
 
+    def update(self, rewards):
+        current_mean = np.mean(rewards)
+        current_var = np.var(rewards)
+        if self.mean is None:
+            self.mean = current_mean
+            self.var = current_var
+        else:
+            self.mean = self.alpha * current_mean + (1 - self.alpha) * self.mean
+            self.var = self.alpha * current_var + (1 - self.alpha) * self.var
+
+    def normalize(self, rewards):
+        std = np.sqrt(self.var) if self.var is not None else 1.0
+        return (rewards - self.mean) / (std + self.epsilon)
+
+# ---------------------------------------------------------------------------
+# Argument Parsing
+# ---------------------------------------------------------------------------
 def parse_args(args=None):
-    """
-    Parse command-line arguments or a list of arguments.
-
-    Args:
-        args (list, optional): List of arguments to parse. Defaults to None.
-
-    Returns:
-        argparse.Namespace: Parsed arguments.
-    """
-    parser = argparse.ArgumentParser(description="Train SNAIL Performer on MetaMaze environment.")
-
-    # Training hyperparameters
-    parser.add_argument("--total_timesteps", type=int, default=1200000, help="Total number of training steps.")
-    parser.add_argument("--steps_per_update", type=int, default=60000, help="Number of steps between PPO updates.")
+    parser = argparse.ArgumentParser(
+        description="Train SNAIL Performer on MetaMaze environment."
+    )
+    parser.add_argument("--total_timesteps", type=int, default=1200000, help="Total training steps.")
+    parser.add_argument("--steps_per_update", type=int, default=60000, help="Steps between PPO updates.")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor.")
     parser.add_argument("--gae_lambda", type=float, default=0.99, help="GAE lambda.")
-    parser.add_argument("--clip_range", type=float, default=0.1, help="Clip range for PPO.")
+    parser.add_argument("--clip_range", type=float, default=0.1, help="Clipping range for PPO.")
     parser.add_argument("--target_kl", type=float, default=0.03, help="Target KL divergence.")
     parser.add_argument("--lr", type=float, default=0.0001, help="Learning rate for PPO.")
-    
-    # Entropy settings
     parser.add_argument("--entropy_coef_start", type=float, default=0.04, help="Initial entropy coefficient.")
     parser.add_argument("--entropy_coef_end", type=float, default=0.01, help="Final entropy coefficient.")
-    parser.add_argument("--entropy_anneal_end", type=int, default=500000, help="Timestep by which entropy coefficient is annealed.")
-    
-    # Checkpoints and model saving
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoint_snail", help="Directory to save/load checkpoints.")
-    parser.add_argument("--checkpoint_file", type=str, default=None, help="Path to a specific checkpoint file to load. Overrides checkpoint_dir if provided.")
-    parser.add_argument("--model_save_path", type=str, default=None, help="Path to save the final model (optional).")
-
+    parser.add_argument("--entropy_anneal_end", type=int, default=500000, help="Timestep for entropy annealing.")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoint_snail", help="Checkpoint directory.")
+    parser.add_argument("--checkpoint_file", type=str, default=None, help="Checkpoint file to load.")
+    parser.add_argument("--model_save_path", type=str, default=None, help="Path to save the final model.")
     return parser.parse_args(args)
 
-
+# ---------------------------------------------------------------------------
+# Main Training Function
+# ---------------------------------------------------------------------------
 def main(args=None):
-    """
-    Main function to train the SNAIL Performer model.
-
-    Args:
-        args (list, optional): List of arguments to parse. Defaults to None.
-    """
-    # Parse arguments using parse_args(args)
     parsed_args = parse_args(args)
     
-    # Setup device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Determine checkpoint file path using parsed_args (NOT args)
-    if parsed_args.checkpoint_file is not None:
-        checkpoint_file = parsed_args.checkpoint_file
-        checkpoint_dir = os.path.dirname(checkpoint_file) if checkpoint_file else parsed_args.checkpoint_dir
-    else:
-        checkpoint_dir = parsed_args.checkpoint_dir
-        checkpoint_file = os.path.join(checkpoint_dir, "snail_ckpt.pth")
-
-    os.makedirs(checkpoint_dir, exist_ok=True)
-
     # Create the environment
     env_id = "MetaMazeDiscrete3D-v0"
     env = gym.make(env_id, enable_render=False)
-
-    # Load tasks configuration (train_tasks.json) from the mazes_data folder
+    
+    # Load tasks from the mazes_data folder
     tasks_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mazes_data", "train_tasks.json")
-    tasks_file_path = os.path.normpath(tasks_file_path)  # Normalize path for different OS
-
     if not os.path.isfile(tasks_file_path):
         print(f"Error: Tasks file not found at {tasks_file_path}")
         return
-
     with open(tasks_file_path, "r") as f:
         tasks = json.load(f)
     num_tasks = len(tasks)
+    print(f"Loaded {num_tasks} tasks.")
 
-    # Retrieve hyperparameters from parsed_args
     total_timesteps = parsed_args.total_timesteps
     steps_per_update = parsed_args.steps_per_update
     gamma = parsed_args.gamma
     gae_lambda = parsed_args.gae_lambda
     clip_range = parsed_args.clip_range
     target_kl = parsed_args.target_kl
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Entropy scheduling
     entropy_coef_start = parsed_args.entropy_coef_start
-    entropy_coef_end   = parsed_args.entropy_coef_end
+    entropy_coef_end = parsed_args.entropy_coef_end
     entropy_anneal_end = parsed_args.entropy_anneal_end
 
-    # Initialize the SNAIL model
+    # Initialize the SNAIL model (replace hyperparameters as needed)
     snail = SNAILPolicyValueNet(
         action_dim=4,
         base_dim=256,
         policy_filters=32,
         policy_attn_dim=16,
         value_filters=16,
-        seq_len=800,
+        seq_len=600,  # set appropriate sequence length for your setting
         num_policy_attn=2
     ).to(device)
 
@@ -130,8 +121,15 @@ def main(args=None):
 
     total_steps = 0
     task_idx = 0
+    # Determine checkpoint file path
+    checkpoint_dir = parsed_args.checkpoint_dir
+    if parsed_args.checkpoint_file:
+        checkpoint_file = parsed_args.checkpoint_file
+    else:
+        checkpoint_file = os.path.join(checkpoint_dir, "snail_ckpt.pth")
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # Check if checkpoint file exists
+    # Load checkpoint if it exists
     if os.path.isfile(checkpoint_file):
         tqdm.write(f"Found checkpoint at {checkpoint_file}, loading...")
         ckpt = torch.load(checkpoint_file, map_location=device)
@@ -140,10 +138,10 @@ def main(args=None):
         total_steps = ckpt["total_steps"]
         tqdm.write(f"Resumed training from step {total_steps}")
     else:
-        tqdm.write("No valid checkpoint found; starting from scratch.")
+        tqdm.write("No checkpoint file found, starting from scratch.")
 
-    # Main training progress bar
     pbar = tqdm(total=total_timesteps, initial=total_steps, desc="Training Progress")
+    reward_normalizer = StandardRewardNormalizer(alpha=0.01)
 
     # Rollout buffers
     obs_buffer = []
@@ -152,20 +150,13 @@ def main(args=None):
     val_buffer = []
     rew_buffer = []
     done_buffer = []
-
-    # Phase stats buffers
-    p1_steps_buffer = []
-    p2_steps_buffer = []
-    p1_goal_buffer = []
-    p2_goal_buffer = []
+    # (Phase metrics are assumed to be logged via the environment; here we do not need extra buffers.)
 
     while total_steps < total_timesteps:
-        # Update entropy schedule
         fraction = min(1.0, total_steps / float(entropy_anneal_end))
-        current_entropy_coef = entropy_coef_start + fraction * (entropy_coef_end - entropy_coef_start)
-        ppo_trainer.entropy_coef = current_entropy_coef
+        ppo_trainer.entropy_coef = entropy_coef_start + fraction * (entropy_coef_end - entropy_coef_start)
 
-        # Choose next maze
+        # Sample a new task and set it in the environment.
         task_config = MazeTaskSampler(**tasks[task_idx])
         env.unwrapped.set_task(task_config)
         task_idx = (task_idx + 1) % num_tasks
@@ -173,7 +164,9 @@ def main(args=None):
         obs_raw, _ = env.reset()
         done = False
         truncated = False
+        snail.reset_memory(batch_size=1, device=device)
 
+        # Initialize extra channels.
         last_action = 0.0
         last_reward = 0.0
         boundary_bit = 1.0
@@ -187,113 +180,54 @@ def main(args=None):
         ep_dones = []
 
         while not done and not truncated and total_steps < total_timesteps:
-            # Construct 6-channel observation
+            # Build a 6-channel observation.
             obs_img = np.transpose(obs_raw, (2, 0, 1))  # (3, H, W)
             H, W = obs_img.shape[1], obs_img.shape[2]
             c3 = np.full((1, H, W), last_action, dtype=np.float32)
             c4 = np.full((1, H, W), last_reward, dtype=np.float32)
             c5 = np.full((1, H, W), boundary_bit, dtype=np.float32)
             obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)
-
             ep_obs_seq.append(obs_6ch)
-            t_len = len(ep_obs_seq)
 
-            obs_seq_np = np.stack(ep_obs_seq, axis=0)[None]  # shape: (1, T, 6, H, W)
-            obs_seq_torch = torch.from_numpy(obs_seq_np).float().to(device)
-
+            # Convert observation to tensor for a single step forward.
+            obs_t = torch.from_numpy(obs_6ch[None, None]).float().to(device)  # Shape: (1, 1, 6, H, W)
             with torch.no_grad():
-                logits_seq, vals_seq = snail(obs_seq_torch)
-
-            logits_t = logits_seq[:, t_len - 1, :]
-            val_t = vals_seq[:, t_len - 1]
-
-            # Sample action
-            dist = torch.distributions.Categorical(logits=logits_t)
+                logits_t, val_t = snail.act_single_step(obs_t)
+            dist = torch.distributions.Categorical(logits=logits_t.squeeze(1))
             action = dist.sample()
             logp = dist.log_prob(action)
 
-            # Step environment
+            # Step environment (use raw rewards, no clipping/masking)
             obs_next, reward, done, truncated, info = env.step(action.item())
             total_steps += 1
             pbar.update(1)
 
-            # Store transition
             ep_actions.append(action.item())
             ep_logprobs.append(logp.item())
             ep_values.append(val_t.item())
             ep_rewards.append(reward)
             ep_dones.append(float(done))
 
-            # Update trackers
             last_action = float(action.item())
             last_reward = float(reward)
             obs_raw = obs_next
 
-            # Boundary bit (when switching from Phase1 -> Phase2)
+            # Update boundary bit for phase switch if applicable.
             if hasattr(env.unwrapped, 'maze_core') and env.unwrapped.maze_core.phase == 2 and not phase_boundary_signaled:
                 boundary_bit = 1.0
                 phase_boundary_signaled = True
             else:
                 boundary_bit = 0.0
 
-            # Update progress bar postfix
             pbar.set_postfix({
                 "entropy_coef": f"{ppo_trainer.entropy_coef:.4f}",
-                "last_reward":  f"{reward:.2f}"
+                "last_reward": f"{reward:.2f}"
             })
 
-            # If the episode ended, parse phase stats
-            if done or truncated:
-                p1_total_rew, p2_total_rew = 0.0, 0.0
-                p1_steps, p2_steps = 0, 0
-                p1_goal_reached, p2_goal_reached = False, False
+            # Optionally, you can also update the progress bar with phase-specific stats
+            # by reading info["phase_reports"] if your environment returns those.
 
-                if "phase_reports" in info:
-                    ph1 = info["phase_reports"].get("Phase1", {})
-                    ph2 = info["phase_reports"].get("Phase2", {})
-
-                    # Raw sums
-                    p1_goal_rew  = ph1.get("Goal Rewards", 0.0)
-                    p1_step_rew  = ph1.get("Total Step Rewards", 0.0)
-                    p1_coll_rew  = ph1.get("Total Collision Rewards", 0.0)
-                    p1_total_rew = p1_goal_rew + p1_step_rew + p1_coll_rew
-                    p1_steps     = ph1.get("Total Steps", 0)
-                    p1_goal_reached = ph1.get("Goal Reached", False)
-
-                    p2_goal_rew  = ph2.get("Goal Rewards", 0.0)
-                    p2_step_rew  = ph2.get("Total Step Rewards", 0.0)
-                    p2_coll_rew  = ph2.get("Total Collision Rewards", 0.0)
-                    p2_total_rew = p2_goal_rew + p2_step_rew + p2_coll_rew
-                    p2_steps     = ph2.get("Total Steps", 0)
-                    p2_goal_reached = ph2.get("Goal Reached", False)
-
-                    # tqdm.write(f"\n=== Detailed Episode Report ===")
-                    # tqdm.write(f"  Phase1:")
-                    # tqdm.write(f"    Steps:                {p1_steps}")
-                    # tqdm.write(f"    Step Rewards:         {p1_step_rew:.3f}")
-                    # tqdm.write(f"    Goal Rewards:         {p1_goal_rew:.3f}")
-                    # tqdm.write(f"    Collision Penalties:  {p1_coll_rew:.3f}")
-                    # tqdm.write(f"    => Phase1 Total:      {p1_total_rew:.3f}")
-
-                    # tqdm.write(f"  Phase2:")
-                    # tqdm.write(f"    Steps:                {p2_steps}")
-                    # tqdm.write(f"    Step Rewards:         {p2_step_rew:.3f}")
-                    # tqdm.write(f"    Goal Rewards:         {p2_goal_rew:.3f}")
-                    # tqdm.write(f"    Collision Penalties:  {p2_coll_rew:.3f}")
-                    # tqdm.write(f"    => Phase2 Total:      {p2_total_rew:.3f}\n")
-
-                ep_len = len(ep_rewards)
-                ep_p1_steps = [p1_steps] * ep_len
-                ep_p2_steps = [p2_steps] * ep_len
-                ep_p1_goals = [p1_goal_reached] * ep_len
-                ep_p2_goals = [p2_goal_reached] * ep_len
-
-                p1_steps_buffer.extend(ep_p1_steps)
-                p2_steps_buffer.extend(ep_p2_steps)
-                p1_goal_buffer.extend(ep_p1_goals)
-                p2_goal_buffer.extend(ep_p2_goals)
-
-        # Summarize the episode
+        # End of episode: add rollout to buffers.
         obs_buffer.extend(ep_obs_seq)
         act_buffer.extend(ep_actions)
         logp_buffer.extend(ep_logprobs)
@@ -301,179 +235,78 @@ def main(args=None):
         rew_buffer.extend(ep_rewards)
         done_buffer.extend(ep_dones)
 
-        # Update PPO if needed
+        # Update PPO when enough rollouts have been collected.
         if len(obs_buffer) >= steps_per_update:
-            do_update(
-                snail,
-                ppo_trainer,
-                obs_buffer,
-                act_buffer,
-                logp_buffer,
-                val_buffer,
-                rew_buffer,
-                done_buffer,
-                p1_steps_buffer,
-                p2_steps_buffer,
-                p1_goal_buffer,
-                p2_goal_buffer,
-                device,
-                total_steps,
-                checkpoint_file
-            )
-            # Clear buffers
+            do_update(snail, ppo_trainer,
+                      obs_buffer, act_buffer, logp_buffer,
+                      val_buffer, rew_buffer, done_buffer,
+                      device, total_steps, parsed_args, reward_normalizer)
             obs_buffer.clear()
             act_buffer.clear()
             logp_buffer.clear()
             val_buffer.clear()
             rew_buffer.clear()
             done_buffer.clear()
-            p1_steps_buffer.clear()
-            p2_steps_buffer.clear()
-            p1_goal_buffer.clear()
-            p2_goal_buffer.clear()
 
-    # Final cleanup if leftover
-    if len(obs_buffer) > 0:
-        do_update(
-            snail,
-            ppo_trainer,
-            obs_buffer,
-            act_buffer,
-            logp_buffer,
-            val_buffer,
-            rew_buffer,
-            done_buffer,
-            p1_steps_buffer,
-            p2_steps_buffer,
-            p1_goal_buffer,
-            p2_goal_buffer,
-            device,
-            total_steps,
-            checkpoint_file
-        )
-
-    # Save final model if specified
-    if parsed_args.model_save_path:
-        os.makedirs(os.path.dirname(parsed_args.model_save_path), exist_ok=True)
-        torch.save(snail.state_dict(), parsed_args.model_save_path)
-        tqdm.write(f"Model saved at {parsed_args.model_save_path}")
-
-    tqdm.write(f"Training finished after {total_steps} steps.")
+    pbar.close()
     env.close()
 
+    # Final update on any remaining rollouts.
+    if len(obs_buffer) > 0:
+        do_update(snail, ppo_trainer,
+                  obs_buffer, act_buffer, logp_buffer,
+                  val_buffer, rew_buffer, done_buffer,
+                  device, total_steps, parsed_args, reward_normalizer)
 
-def do_update(
-    snail_net,
-    trainer,
-    obs_buf,
-    act_buf,
-    logp_buf,
-    val_buf,
-    rew_buf,
-    done_buf,
-    p1_steps_buf,
-    p2_steps_buf,
-    p1_goal_buf,
-    p2_goal_buf,
-    device,
-    total_steps,
-    checkpoint_file
-):
-    """
-    Perform PPO update and save checkpoint.
+    save_checkpoint(snail, ppo_trainer, total_steps, parsed_args)
+    print(f"Training finished after {total_steps} steps.")
 
-    Args:
-        snail_net (SNAILPolicyValueNet): The policy network.
-        trainer (PPOTrainer): The PPO trainer instance.
-        obs_buf (list): Observation buffer.
-        act_buf (list): Action buffer.
-        logp_buf (list): Log-probability buffer.
-        val_buf (list): Value estimates buffer.
-        rew_buf (list): Reward buffer.
-        done_buf (list): Done flag buffer.
-        p1_steps_buf (list): Phase1 steps buffer.
-        p2_steps_buf (list): Phase2 steps buffer.
-        p1_goal_buf (list): Phase1 goal buffer.
-        p2_goal_buf (list): Phase2 goal buffer.
-        device (torch.device): The device to run computations on.
-        total_steps (int): Total training steps completed.
-        checkpoint_file (str): Path to save the checkpoint.
-    """
-    from tqdm import tqdm
-    import numpy as np
-
-    min_len = min(len(obs_buf), len(p1_steps_buf), len(p2_steps_buf), len(p1_goal_buf), len(p2_goal_buf))
-
-    if min_len < len(obs_buf):
-        tqdm.write(f"[Warning] Truncating buffers from {len(obs_buf)} to {min_len} to synchronize buffer lengths.")
-        # Truncate all buffers to the minimum length to prevent broadcasting errors
-        obs_buf = obs_buf[:min_len]
-        act_buf = act_buf[:min_len]
-        logp_buf = logp_buf[:min_len]
-        val_buf = val_buf[:min_len]
-        rew_buf = rew_buf[:min_len]
-        done_buf = done_buf[:min_len]
-        p1_steps_buf = p1_steps_buf[:min_len]
-        p2_steps_buf = p2_steps_buf[:min_len]
-        p1_goal_buf = p1_goal_buf[:min_len]
-        p2_goal_buf = p2_goal_buf[:min_len]
-
-    if min_len < 2:
-        tqdm.write("[Info] Not enough data to perform PPO update.")
+# ---------------------------------------------------------------------------
+# PPO Update Function (no extra advantage weighting)
+# ---------------------------------------------------------------------------
+def do_update(policy_net, trainer,
+              obs_buf, act_buf, logp_buf,
+              val_buf, rew_buf, done_buf,
+              device, total_steps, args, reward_normalizer):
+    if len(obs_buf) == 0:
+        print("[Update] No data to update.")
+        return
+    T = len(obs_buf)
+    if T < 2:
         return
 
-    obs_np = np.stack(obs_buf, axis=0)[None]
-    acts_np = np.array(act_buf, dtype=np.int64)[None]
-    logp_np = np.array(logp_buf, dtype=np.float32)[None]
-    vals_np = np.array(val_buf, dtype=np.float32)[None]
-    rews_np = np.array(rew_buf, dtype=np.float32)[None]
-    done_np = np.array(done_buf, dtype=np.float32)[None]
-
-    p1_steps_np = np.array(p1_steps_buf, dtype=np.float32)[None]
-    p2_steps_np = np.array(p2_steps_buf, dtype=np.float32)[None]
-    p1_goals_np = np.array(p1_goal_buf, dtype=bool)[None]
-    p2_goals_np = np.array(p2_goal_buf, dtype=bool)[None]
+    obs_np = np.stack(obs_buf, axis=0)[None]         # Shape: (1, T, 6, H, W)
+    acts_np = np.array(act_buf, dtype=np.int64)[None]  # Shape: (1, T)
+    logp_np = np.array(logp_buf, dtype=np.float32)[None]  # Shape: (1, T)
+    vals_np = np.array(val_buf, dtype=np.float32)[None]  # Shape: (1, T)
+    rew_np = np.array(rew_buf, dtype=np.float32)[None]   # Shape: (1, T)
+    done_np = np.array(done_buf, dtype=np.float32)[None] # Shape: (1, T)
 
     B, T_ = acts_np.shape
     next_value = 0.0
 
-    # Standardize rewards
-    rewards_ = rews_np.reshape(-1)
+    # Normalize rewards using the running normalizer
+    rewards_reshaped = rew_np.reshape(-1)
+    reward_normalizer.update(rewards_reshaped)
+    normalized_rewards = reward_normalizer.normalize(rewards_reshaped)
+
     dones_ = done_np.reshape(-1)
     values_ = vals_np.reshape(-1)
 
-    mean_r = np.mean(rewards_)
-    std_r = np.std(rewards_) + 1e-6
-    rewards_ = (rewards_ - mean_r) / std_r
-
-    advantages_ = trainer.compute_gae(rewards_, dones_, values_, next_value)
+    advantages_ = trainer.compute_gae(
+        rewards=normalized_rewards,
+        dones=dones_,
+        values=values_,
+        next_value=next_value
+    )
     returns_ = values_ + advantages_
 
     adv_2d = advantages_.reshape(B, T_)
     ret_2d = returns_.reshape(B, T_)
 
-    adv_1d = adv_2d.reshape(-1)
+    # Remove extra advantage weighting: use uniform weights.
+    adv_weighted_2d = (adv_2d - adv_2d.mean()) / (adv_2d.std() + 1e-8)
 
-    # Apply weighting based on phase performance
-    p1_s = p1_steps_np.reshape(-1)
-    p2_s = p2_steps_np.reshape(-1)
-    p1_g = p1_goals_np.reshape(-1).astype(np.float32)
-    p2_g = p2_goals_np.reshape(-1).astype(np.float32)
-
-    # Boost case: p2 < p1
-    mask_case1 = (p2_s < p1_s).astype(np.float32)
-
-    # Penalty case: no goals in either phase
-    mask_case3 = ((p1_g == 0) & (p2_g == 0)).astype(np.float32)
-
-    weights = 1.0 + 0.2 * mask_case1 - 0.5 * mask_case3
-    weights = np.clip(weights, 0.1, 2.0)
-    adv_weighted = adv_1d * weights
-
-    adv_weighted_2d = adv_weighted.reshape(B, T_)
-    adv_weighted_2d = (adv_weighted_2d - adv_weighted_2d.mean()) / (adv_weighted_2d.std() + 1e-8)
-
-    # Construct final rollouts
     rollouts = {
         "obs": obs_np,
         "actions": acts_np,
@@ -485,32 +318,19 @@ def do_update(
 
     stats = trainer.update(rollouts)
     tqdm.write(f"[PPO Update] {stats}")
-    save_checkpoint(snail_net, trainer, total_steps, checkpoint_file)
+    save_checkpoint(policy_net, trainer, total_steps, args)
 
-
-def save_checkpoint(snail_net, trainer, total_steps, checkpoint_file):
-    """
-    Save the current training checkpoint.
-
-    Args:
-        snail_net (SNAILPolicyValueNet): The policy network.
-        trainer (PPOTrainer): The PPO trainer instance.
-        total_steps (int): Total training steps completed.
-        checkpoint_file (str): Path to save the checkpoint.
-    """
-    import os
-    from tqdm import tqdm
-
+def save_checkpoint(policy_net, trainer, total_steps, args):
+    checkpoint_file = (args.checkpoint_file if args.checkpoint_file 
+                       else os.path.join(args.checkpoint_dir, "snail_ckpt.pth"))
     os.makedirs(os.path.dirname(checkpoint_file), exist_ok=True)
     torch.save({
-        "policy_state_dict": snail_net.state_dict(),
+        "policy_state_dict": policy_net.state_dict(),
         "optimizer_state_dict": trainer.optimizer.state_dict(),
         "total_steps": total_steps
     }, checkpoint_file)
     tqdm.write(f"Checkpoint saved at step {total_steps} -> {checkpoint_file}")
 
-
 if __name__ == "__main__":
-    # If running from the command line, parse arguments from sys.argv
     args = parse_args()
     main(args)

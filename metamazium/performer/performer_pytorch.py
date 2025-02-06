@@ -1,4 +1,4 @@
-# performer/performer_pytorch.py
+# metamazium/performer/performer_pytorch.py
 
 import math
 import functools

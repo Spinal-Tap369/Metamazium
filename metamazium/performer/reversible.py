@@ -1,4 +1,4 @@
-# performer/reversible.py
+# metamazium/performer/reversible.py
 
 import torch
 import torch.nn as nn

@@ -1,4 +1,4 @@
-# env\maze_2d.py
+# metamazium\env\maze_2d.py
 
 import numpy
 import pygame

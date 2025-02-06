@@ -8,10 +8,10 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="metamazium",
-    version="0.1.0",
-    author="Your Name",
-    author_email="your.email@example.com",
-    description="A comprehensive package for meta-learning mazes with SNAIL and Performer models.",
+    version="1.0.0",
+    author="Samuel Verghese",
+    author_email="samvd123@gmail.com",
+    description="A package demonstrating SNAIL as a meta reinforcement learning tool.",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/Spinal-Tap369/Metamazium", 
@@ -21,7 +21,7 @@ setup(
         "License :: OSI Approved :: MIT License",  
         "Operating System :: OS Independent",
     ],
-    python_requires='>=3.8',
+    python_requires='>=3.10',
     install_requires=[
         "numpy",
         "packaging",
@@ -52,13 +52,9 @@ setup(
     include_package_data=True,
     package_data={
         "metamazium": [
-            "env/img/*.png",          # Include all PNG images in env/img/
-            "mazes_data/*.json",      # Include all JSON files in mazes_data/
+            "env/img/*.png",          # maze render assets
+            "mazes_data/*.json",      # training and testing data generated using scripts/generate_mazes.py
         ],
     },
-    # Remove data_files as it's not needed for package-internal data
-    # data_files=[
-    #     ("mazes_data", glob.glob("mazes_data/*.json")),
-    # ],
     zip_safe=False,
 )

@@ -1,4 +1,4 @@
-# snail_performer/ppo.py
+# metamazium/snail_performer/ppo.py
 
 import torch
 import torch.nn as nn

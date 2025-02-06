@@ -1,4 +1,4 @@
-# snail_performer/snail_model.py
+# metamazium/snail_performer/snail_model.py
 
 import math
 import torch

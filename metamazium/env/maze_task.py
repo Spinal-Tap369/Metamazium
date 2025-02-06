@@ -1,4 +1,4 @@
-# env\maze_task.py
+# metamazium\env\maze_task.py
 
 """
 Core File of Maze Env

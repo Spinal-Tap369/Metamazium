@@ -28,7 +28,7 @@ def main():
     pygame.init()
     pygame.display.set_mode((1, 1))  
 
-    train_tasks_path = "mazes_data_try/train_tasks.json"
+    train_tasks_path = "metamazium/mazes_data/train_tasks.json"
     task_set = "train"
     
     if task_set == "train":

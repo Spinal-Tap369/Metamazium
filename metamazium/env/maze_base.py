@@ -1,4 +1,4 @@
-# env\maze_base.py
+# metamazium\env\maze_base.py
 
 import os
 import numpy

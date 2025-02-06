@@ -1,4 +1,4 @@
-# env\dynamics.py
+# metamazium\env\dynamics.py
 
 import numpy
 from numba import njit

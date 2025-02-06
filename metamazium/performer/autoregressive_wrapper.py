@@ -1,4 +1,4 @@
-# performer/autoregressive_wrapper
+# metamazium\performer\autoregressive_wrapper
 
 from functools import partial
 import torch

@@ -1,4 +1,4 @@
-# snail_performer/cnn_encoder.py
+# metamazium/snail_performer/cnn_encoder.py
 
 import torch
 import torch.nn as nn

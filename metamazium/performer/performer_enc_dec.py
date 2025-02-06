@@ -1,4 +1,4 @@
-# performer/performer_enc_dec.py
+# metamazium/performer/performer_enc_dec.py
 
 import re
 import torch
