@@ -14,6 +14,8 @@ from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
 from metamazium.snail_performer.ppo import PPOTrainer
 from metamazium.snail_performer.cnn_encoder import CNNEncoder
 
+from metamazium.train_model import train_lstm_trpo
+
 
 __all__ = [
     'MetaMazeDiscrete3D',
@@ -27,4 +29,5 @@ __all__ = [
     'SNAILPolicyValueNet',
     'PPOTrainer',
     'CNNEncoder',
+    'train_lstm_trpo',
 ]
