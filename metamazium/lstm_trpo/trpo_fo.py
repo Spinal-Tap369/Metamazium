@@ -102,7 +102,7 @@ class TRPO_FO:
         simulator=None,
         max_kl_div=0.01,
         discount=0.99,
-        lam=0.95,
+        lam=0.99,
         vf_iters=5,
         max_value_step=0.01
     ):

@@ -90,7 +90,6 @@ class TRPO_FO:
     
     References:
         - TRPO: https://arxiv.org/abs/1502.05477
-        - RL^2: https://arxiv.org/pdf/1611.02779
     """
     def __init__(
         self,
@@ -99,7 +98,7 @@ class TRPO_FO:
         simulator=None,
         max_kl_div=0.01,
         discount=0.99,
-        lam=0.95,
+        lam=0.99,
         vf_iters=5,
         max_value_step=0.01
     ):

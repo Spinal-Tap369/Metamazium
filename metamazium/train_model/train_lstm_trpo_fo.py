@@ -1,3 +1,5 @@
+# metamazium/train_model/train_lstm_trpo_fo.py
+
 import os
 import json
 import gymnasium as gym
@@ -129,8 +131,6 @@ def main(args=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Initialize policy network and TRPO trainer.
-    from metamazium.lstm_trpo.lstm_model import StackedLSTMPolicyValueNet
-    from metamazium.lstm_trpo.trpo_fo import TRPO_FO
     policy_net = StackedLSTMPolicyValueNet(action_dim=4, hidden_size=512, num_layers=2).to(device)
     trpo_trainer = TRPO_FO(
         policy=policy_net,
@@ -155,7 +155,6 @@ def main(args=None):
 
     while total_steps < TOTAL_TIMESTEPS:
         # For each trial, reconstruct the task configuration from trial_tasks.
-        # (Note: The task dictionary does not include randomized start/goal.)
         task_cfg = MazeTaskManager.TaskConfig(**trial_tasks[task_idx])
         env.unwrapped.set_task(task_cfg)
         task_idx = (task_idx + 1) % len(trial_tasks)
