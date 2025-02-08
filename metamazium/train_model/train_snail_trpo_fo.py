@@ -142,7 +142,7 @@ def main(args=None):
 
     # Initialize SNAIL policy network and TRPO trainer.
     policy_net = SNAILPolicyValueNet(
-        action_dim=4,
+        action_dim=3,
         base_dim=256,
         policy_filters=32,
         policy_attn_dim=16,
