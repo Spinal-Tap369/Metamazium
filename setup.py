@@ -46,7 +46,8 @@ setup(
     entry_points={
         "console_scripts": [
             "generate-mazes=metamazium.scripts.generate_mazes:main",
-            "train-snail=metamazium.train_model.train_snail_performer:main",
+            "train-snail=metamazium.train_model.train_snail_trpo_fo:main",
+            "train-lstm=metamazium.train_model.train_lstm_trpo_fo:main"
         ],
     },
     include_package_data=True,
