@@ -130,10 +130,8 @@ def main(args=None):
         tasks_all = json.load(f)
     print(f"Loaded {len(tasks_all)} unique tasks.")
 
-    # From the available tasks (e.g. 215), sample 200 tasks evenly.
-    # (Adjust the sampling as needed.)
+    # From the available tasks sample 200 tasks evenly.
     sampled_tasks = random.sample(tasks_all, 200)
-    # Repeat each sampled task 5 times (200*5 = 1000 trials).
     trial_tasks = []
     for task in sampled_tasks:
         for _ in range(5):
@@ -178,7 +176,6 @@ def main(args=None):
 
     while total_steps < TOTAL_TIMESTEPS:
         # Reconstruct the task configuration using the saved parameters.
-        # (We use MazeTaskManager.TaskConfig to reconstruct instead of MazeTaskSampler.)
         task_cfg = MazeTaskManager.TaskConfig(**trial_tasks[task_idx])
         env.unwrapped.set_task(task_cfg)
         task_idx = (task_idx + 1) % len(trial_tasks)

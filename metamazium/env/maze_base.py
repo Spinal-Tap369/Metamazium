@@ -21,12 +21,10 @@ class MazeBase(object):
 
     def set_task(self, task_config):
         # Initialize textures and parameters.
-        # (Make sure that if these are loaded from JSON they are converted to NumPy arrays.)
-        import numpy as np
         self._cell_walls = numpy.copy(task_config.cell_walls if isinstance(task_config.cell_walls, numpy.ndarray) 
-                                        else np.array(task_config.cell_walls))
+                                        else numpy.array(task_config.cell_walls))
         self._cell_texts = task_config.cell_texts if isinstance(task_config.cell_texts, numpy.ndarray) \
-                             else np.array(task_config.cell_texts)
+                             else numpy.array(task_config.cell_texts)
         self._start = task_config.start
         self._n = numpy.shape(self._cell_walls)[0]
         self._goal = task_config.goal
