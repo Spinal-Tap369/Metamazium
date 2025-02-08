@@ -21,7 +21,7 @@ class CNNEncoder(nn.Module):
         self.conv1 = nn.Conv2d(in_channels=6, out_channels=16, kernel_size=5, stride=2)
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=16, kernel_size=5, stride=2)
         
-        self.fc = nn.Linear(2400, 256)
+        self.fc = nn.Linear(16 * 5 * 7, 256)
 
     def forward(self, obs):
         """

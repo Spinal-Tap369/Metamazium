@@ -11,11 +11,11 @@ from metamazium.performer.performer_enc_dec import PerformerEncDec
 
 # Importing SNAIL Performer components
 from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
-from metamazium.snail_performer.ppo import PPOTrainer
+from metamazium.snail_performer.trpo_fo import TRPO_FO
 from metamazium.snail_performer.cnn_encoder import CNNEncoder
 
-from metamazium.train_model import train_lstm_trpo
-
+from metamazium.train_model import train_lstm_trpo_fo_main
+from metamazium.train_model import train_snail_trpo_fo_main
 
 __all__ = [
     'MetaMazeDiscrete3D',
@@ -27,7 +27,8 @@ __all__ = [
     'AutoregressiveWrapper',
     'PerformerEncDec',
     'SNAILPolicyValueNet',
-    'PPOTrainer',
+    'TRPO_FO',
     'CNNEncoder',
-    'train_lstm_trpo',
+    'train_lstm_trpo_fo_main',
+    'train_snail_trpo_fo_main'
 ]
