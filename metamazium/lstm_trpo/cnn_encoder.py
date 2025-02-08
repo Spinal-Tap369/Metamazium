@@ -1,4 +1,4 @@
-# lstm_ppo/cnn_encoder.py
+# metamazium/lstm_trpo/cnn_encoder.py
 
 import torch
 import torch.nn as nn
@@ -21,9 +21,7 @@ class CNNEncoder(nn.Module):
         self.conv1 = nn.Conv2d(in_channels=6, out_channels=16, kernel_size=5, stride=2)
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=16, kernel_size=5, stride=2)
         
-        # Based on an example input shape (6, 30, 40), two conv layers result in an output ~ (16, 5, 7).
-        # Flattening this output gives 16*5*7 = 560 features, which are then projected to a 256-dimensional space.
-        self.fc = nn.Linear(16 * 5 * 7, 256)
+        self.fc = nn.Linear(2400, 256)
 
     def forward(self, obs):
         """

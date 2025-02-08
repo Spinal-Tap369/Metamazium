@@ -8,7 +8,7 @@ register(
     kwargs={
         "enable_render": True,
         "render_scale": 480,
-        "resolution": (40, 30),
+        "resolution": (50, 70),
         "max_steps": 5000,
         "task_type": "ESCAPE",
         "phase_step_limit": 250,  # Define steps per phase

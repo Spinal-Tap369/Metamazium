@@ -9,21 +9,21 @@ from copy import deepcopy
 from metamazium.env.maze_base import MazeBase
 from metamazium.env.ray_caster_utils import maze_view
 from metamazium.env.maze_task import MAZE_TASK_MANAGER
-
-# Define discrete actions: Left, Right, Down, Up
-DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+from metamazium.env.dynamics import vector_move_with_collision, PI  # Import collision functions and PI
 
 class MazeCoreDiscrete3D(MazeBase):
     """
     Core logic for the discrete 3D maze environment.
     Handles agent movement, phase transitions, and reward calculations.
+
+    This version uses a step penalty, a collision penalty, and a goal reward.
+    It now uses collision detection from dynamics.py (via vector_move_with_collision).
     
-    This version only uses:
-      1. A step penalty (self._step_reward)
-      2. A collision penalty (self.collision_penalty)
-      3. A goal reward (self._goal_reward)
-    All other incentives (exploration bonus, new cell bonus, visited cell penalty)
-    have been removed.
+    Expected action: a tuple (turn, step) where:
+      - turn: -1 for turning left 15°, 0 for no turn, +1 for turning right 15°.
+      - step: typically +1 to move forward (or -1 to move backward if allowed, but here we disable backward motion).
+    
+    A no-op action (0, 0) will not update the agent’s state or register a timestep.
     """
     def __init__(
             self,
@@ -47,39 +47,26 @@ class MazeCoreDiscrete3D(MazeBase):
             max_steps=max_steps,
             phase_step_limit=phase_step_limit
         )
-        # Orientation
-        self._agent_ori_choice = [0, np.pi / 2, np.pi, 3 * np.pi / 2]
-        self._agent_ori_index = 0
-        self._agent_ori = self._agent_ori_choice[self._agent_ori_index]
+        # Use a continuous angle (in radians) to represent orientation.
+        self._agent_ori = 0.0  # starting orientation in radians
+        self.collision_penalty = collision_penalty
 
-        self.collision_penalty = collision_penalty  # negative penalty for collision
-
-        # Phase metrics (only keeping step rewards, collisions, and goal rewards)
+        # Phase metrics for logging and reward computation.
         self.phase_metrics = {
-            1: {
-                "goal_rewards": 0.0,
-                "steps": 0,
-                "step_rewards": 0.0,
-                "collisions": 0,
-                "collision_rewards": 0.0
-            },
-            2: {
-                "goal_rewards": 0.0,
-                "steps": 0,
-                "step_rewards": 0.0,
-                "collisions": 0,
-                "collision_rewards": 0.0
-            }
+            1: {"goal_rewards": 0.0, "steps": 0, "step_rewards": 0.0,
+                "collisions": 0, "collision_rewards": 0.0},
+            2: {"goal_rewards": 0.0, "steps": 0, "step_rewards": 0.0,
+                "collisions": 0, "collision_rewards": 0.0}
         }
 
-        # Base rewards (can be overridden via task config)
+        # Base rewards.
         self._step_reward = -0.01         # per timestep
         self._goal_reward = 1.0           # reward for reaching the goal
 
     def reset(self):
         observation = super(MazeCoreDiscrete3D, self).reset()
         self._starting_position = deepcopy(self._agent_grid)
-        # (Visited cells are not used in this simplified reward scheme.)
+        # Reset phase metrics.
         self.phase_metrics = {
             1: {"goal_rewards": 0.0, "steps": 0, "step_rewards": 0.0,
                 "collisions": 0, "collision_rewards": 0.0},
@@ -91,30 +78,52 @@ class MazeCoreDiscrete3D(MazeBase):
     def do_action(self, action):
         """
         Executes the given (turn, step) action.
-        Applies the base step penalty, collision penalty, and goal reward.
-        """
-        assert isinstance(action, tuple) and len(action) == 2
-        direction, step = action
+        Converts the discrete command into continuous control signals and applies
+        collision-aware movement using vector_move_with_collision from dynamics.py.
 
-        self.turn(direction)
-        old_grid = deepcopy(self._agent_grid)
-        self.move(step)
-        # Only consider it a collision if the step was nonzero and the grid didn't change
-        collision = (step != 0) and np.array_equal(old_grid, self._agent_grid)
+        If the action is (0, 0) (i.e. no rotation and no movement), no update occurs
+        and no timestep penalty is incurred.
+        """
+        # Check for no-op.
+        if action == (0, 0):
+            return 0.0, False, False
+
+        assert isinstance(action, tuple) and len(action) == 2, "Action must be a tuple (turn, step)"
+        turn_command, step_command = action
+
+        # Use a smaller time step to reduce step size.
+        dt = 0.1
+        # For a 15° rotation per unit turn with dt=0.1 and turn_factor=5.0,
+        # we need: turn_rate * 0.1 * 5 = 0.2618, so turn_rate ≈ 0.5236.
+        turn_rate = 0.5236 * turn_command
+
+        # Use the step command directly; with dt=0.1 and move_factor=6.0,
+        # a step of 1 moves the agent approximately 0.6 cells.
+        # Prevent backward motion:
+        walk_speed = step_command if step_command > 0 else 0.0
+
+        # Apply collision-aware movement.
+        new_ori, new_loc, collision = vector_move_with_collision(
+            self._agent_ori, self._agent_loc, turn_rate, walk_speed, dt,
+            self._cell_walls, self._cell_size, self.collision_dist
+        )
+        self._agent_ori = new_ori
+        self._agent_loc = new_loc
+        self._agent_grid = self.get_loc_grid(new_loc)
+
         self.phase_metrics[self.phase]["steps"] += 1
         self.current_phase_steps += 1
 
-        # Get base reward and done flag from evaluation_rule.
+        # Compute the reward and check termination.
         reward, done = self.evaluation_rule()
 
-        # Apply collision penalty only if there was an actual attempted movement
         if collision:
             reward += self.collision_penalty
             self.phase_metrics[self.phase]["collisions"] += 1
             self.phase_metrics[self.phase]["collision_rewards"] += self.collision_penalty
 
-        # Check if agent reached the goal.
-        agent_at_goal = (tuple(self._agent_grid) == self._goal)
+        # Check if the agent reached the goal.
+        agent_at_goal = (tuple(self._agent_grid) == tuple(self._goal))
         if self.task_type == "ESCAPE":
             if agent_at_goal:
                 if self.phase == 1:
@@ -142,15 +151,9 @@ class MazeCoreDiscrete3D(MazeBase):
         return reward, done, collision
 
     def evaluation_rule(self):
-        """
-        Determines the base reward and termination flag.
-        For the ESCAPE task:
-          - In Phase 1: always applies the step penalty.
-          - In Phase 2: applies the step penalty and adds the goal reward if the agent reaches the goal.
-        """
         self.steps += 1
         self._agent_trajectory.append(np.copy(self._agent_grid))
-        agent_at_goal = (tuple(self._goal) == tuple(self._agent_grid))
+        agent_at_goal = (tuple(self._agent_grid) == tuple(self._goal))
         if self.task_type == "ESCAPE":
             if self.phase == 1:
                 self.phase_metrics[1]["step_rewards"] += self._step_reward
@@ -170,21 +173,17 @@ class MazeCoreDiscrete3D(MazeBase):
             done = False
         return reward, done
 
+    # (Old turn() and move() methods are kept here for reference.)
     def turn(self, direction):
-        self._agent_ori_index = (self._agent_ori_index + direction) % len(self._agent_ori_choice)
-        self._agent_ori = self._agent_ori_choice[self._agent_ori_index]
+        delta = np.deg2rad(15)
+        self._agent_ori = (self._agent_ori + direction * delta) % (2 * np.pi)
 
     def move(self, step):
         tmp_grid = deepcopy(self._agent_grid)
-        if self._agent_ori_index == 0:
-            tmp_grid[0] += step
-        elif self._agent_ori_index == 1:
-            tmp_grid[1] += step
-        elif self._agent_ori_index == 2:
-            tmp_grid[0] -= step
-        elif self._agent_ori_index == 3:
-            tmp_grid[1] -= step
-
+        dx = int(round(np.cos(self._agent_ori) * step))
+        dy = int(round(np.sin(self._agent_ori) * step))
+        tmp_grid[0] += dx
+        tmp_grid[1] += dy
         if (0 <= tmp_grid[0] < self._n and 0 <= tmp_grid[1] < self._n and
                 self._cell_walls[tmp_grid[0], tmp_grid[1]] == 0):
             self._agent_grid = tmp_grid
@@ -209,6 +208,13 @@ class MazeCoreDiscrete3D(MazeBase):
         pygame.draw.line(self._screen, pygame.Color("green"), center_pos, end_pos, width=1)
 
     def movement_control(self, keys):
+        """
+        For keyboard control:
+          - Left arrow: (-1, 0) to turn left 15°.
+          - Right arrow: (1, 0) to turn right 15°.
+          - Up arrow: (0, 1) to step forward.
+          - Down arrow: returns (0, 0) so that no timestep is registered.
+        """
         if keys[pygame.K_LEFT]:
             return (-1, 0)
         if keys[pygame.K_RIGHT]:
@@ -216,7 +222,7 @@ class MazeCoreDiscrete3D(MazeBase):
         if keys[pygame.K_UP]:
             return (0, 1)
         if keys[pygame.K_DOWN]:
-            return (0, -1)
+            return (0, 0)
         return (0, 0)
 
     def update_observation(self):
@@ -245,10 +251,6 @@ class MazeCoreDiscrete3D(MazeBase):
         return np.copy(self._observation)
     
     def randomize_start(self):
-        """
-        Randomly chooses a new starting cell from those that are passable 
-        (i.e. where _cell_walls == 0) and updates the agent's grid.
-        """
         valid_cells = [ (i, j) for i in range(self._n) for j in range(self._n) if self._cell_walls[i, j] == 0 ]
         new_start = None
         while True:

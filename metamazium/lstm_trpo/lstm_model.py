@@ -8,9 +8,15 @@ from .cnn_encoder import CNNEncoder
 class StackedLSTMPolicyValueNet(nn.Module):
     """
     A stacked two-layer LSTM network that outputs both policy logits and value estimates.
-    - Single-step usage (e.g. env rollout) can use `act_single_step()`, which stores
+    
+    This model is adapted for a 3-action discrete environment:
+      1. Move forward
+      2. Turn slightly left (15 degrees)
+      3. Turn slightly right (15 degrees)
+    
+    - Single-step usage (e.g. during environment rollout) can use `act_single_step()`, which stores
       the hidden state internally (self.hidden).
-    - Batched usage (e.g. PPO updates) should use `forward_with_state(obs, rnn_state)`
+    - Batched usage (e.g. during PPO updates) should use `forward_with_state(obs, rnn_state)`,
       which accepts an external hidden state for shape consistency.
       
     Input shape for batched usage: (B, T, 6, H, W)
@@ -45,7 +51,7 @@ class StackedLSTMPolicyValueNet(nn.Module):
     def reset_memory(self, batch_size=1, device=None):
         """
         Resets the LSTM's hidden and cell states for single-step usage (self.hidden).
-        Typically call at the start of a new trial if you're using `act_single_step()`.
+        Typically call this at the start of a new trial if you're using `act_single_step()`.
         """
         if device is None:
             device = next(self.parameters()).device
@@ -56,12 +62,13 @@ class StackedLSTMPolicyValueNet(nn.Module):
 
     def forward_with_state(self, x, rnn_state):
         """
-        For batched usage in PPO/TRPO updates, where x is (B, T, 6, H, W) and
-        rnn_state is ( (num_layers, B, hidden_size), (num_layers, B, hidden_size) ).
-
-        Returns: (policy_logits, values, new_rnn_state)
-          - policy_logits shape: (B, T, action_dim)
-          - values shape: (B, T)
+        For batched usage (e.g., in PPO/TRPO updates), where:
+          - x is of shape (B, T, 6, H, W)
+          - rnn_state is a tuple of (hidden, cell) of shapes ((num_layers, B, hidden_size), (num_layers, B, hidden_size))
+        
+        Returns:
+          - policy_logits: (B, T, action_dim)
+          - values: (B, T)
           - new_rnn_state: updated (hidden, cell)
         """
         B, T, C, H, W = x.shape
@@ -77,45 +84,61 @@ class StackedLSTMPolicyValueNet(nn.Module):
     def act_single_step(self, x):
         """
         Single-step forward pass for environment rollout.
-        x shape: (B, 1, 6, H, W). Typically B=1 for single-step usage.
-
-        Returns: (policy_logits, values) each with shape (B, 1, ...).
+        
+        Args:
+          x: Tensor of shape (B, 1, 6, H, W). Typically B=1 for single-step usage.
+          
+        Returns:
+          - policy_logits: Tensor of shape (B, 1, action_dim)
+          - values: Tensor of shape (B, 1)
+        
         Uses and updates self.hidden in-place.
         """
         self.lstm.flatten_parameters()
 
-        B, T, C, H, W = x.shape  # T=1 usually
+        B, T, C, H, W = x.shape  # T is usually 1
         x = x.view(B * T, C, H, W)
         feats = self.cnn_encoder(x)
         feats = feats.view(B, T, 256)
 
         lstm_out, self.hidden = self.lstm(feats, self.hidden)
-        # Detach so that we don't backprop through previous timesteps
+        # Detach the hidden state to prevent backpropagating through previous timesteps
         self.hidden = tuple(h.detach() for h in self.hidden)
 
-        policy_logits = self.policy_head(lstm_out)      # shape (B, 1, action_dim)
-        values = self.value_head(lstm_out).squeeze(-1)  # shape (B, 1)
+        policy_logits = self.policy_head(lstm_out)  # (B, 1, action_dim)
+        values = self.value_head(lstm_out).squeeze(-1)  # (B, 1)
         return policy_logits, values
 
     def value(self, obs, prev_action, prev_reward, rnn_state, training=False):
         """
-        This method is for externally computing values with an external rnn_state.
-        obs shape: (B, T, 6, H, W)
-        rnn_state: (hidden, cell)
-        Returns: (values, new_rnn_state)
+        Computes value estimates given observations and an external RNN state.
+        
+        Args:
+          obs: Tensor of shape (B, T, 6, H, W)
+          rnn_state: Tuple (hidden, cell)
+          
+        Returns:
+          - values: Tensor of shape (B, T)
+          - new_rnn_state: updated RNN state
         """
-       
-        policy_logits, values, new_rnn_state = self.forward_with_state(obs, rnn_state)
+        _, values, new_rnn_state = self.forward_with_state(obs, rnn_state)
         return values, new_rnn_state
 
     def pi(self, obs, prev_action, prev_reward, rnn_state, action=None, training=False):
         """
-        Returns a distribution over actions (dist) and optional log_prob if 'action' is given.
-        obs shape: (B, T, 6, H, W)
-        rnn_state: (hidden, cell)
-        Returns: (dist, log_prob, new_rnn_state)
+        Computes a distribution over actions along with the corresponding log probability (if action is provided).
+        
+        Args:
+          obs: Tensor of shape (B, T, 6, H, W)
+          rnn_state: Tuple (hidden, cell)
+          action: (optional) Tensor of actions for which to compute the log probability
+          
+        Returns:
+          - dist: A Categorical distribution over actions
+          - log_prob: Log probability of the provided action (or None if no action is given)
+          - new_rnn_state: updated RNN state
         """
-        logits, values, new_rnn_state = self.forward_with_state(obs, rnn_state)
+        logits, _, new_rnn_state = self.forward_with_state(obs, rnn_state)
         dist = torch.distributions.Categorical(logits=logits)
 
         if action is not None:
@@ -125,11 +148,10 @@ class StackedLSTMPolicyValueNet(nn.Module):
 
         return dist, log_prob, new_rnn_state
 
-    # Separate parameter lists for policy vs. value
     def policy_parameters(self):
         """
-        Return a list of parameters that affect the policy output.
-        Typically includes shared encoder + LSTM + policy head.
+        Returns a list of parameters that affect the policy output.
+        This typically includes the shared encoder, LSTM, and policy head.
         """
         return list(self.cnn_encoder.parameters()) + \
                list(self.lstm.parameters()) + \
@@ -137,8 +159,8 @@ class StackedLSTMPolicyValueNet(nn.Module):
 
     def value_parameters(self):
         """
-        Return a list of parameters that affect the value output.
-        Typically includes shared encoder + LSTM + value head.
+        Returns a list of parameters that affect the value output.
+        This typically includes the shared encoder, LSTM, and value head.
         """
         return list(self.cnn_encoder.parameters()) + \
                list(self.lstm.parameters()) + \

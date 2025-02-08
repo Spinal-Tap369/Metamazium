@@ -1,9 +1,4 @@
-# metamazium/train_model/test_fo.py
-
-"""
-Train an LSTM-TRPO agent on the MetaMaze environment using the first-order TRPO implementation.
-Hyperparameters may be adjusted via command-line arguments.
-"""
+# metamazium/train_model/train_lstm_trpo_fo.py
 
 import os
 import json
@@ -31,7 +26,8 @@ DEFAULT_MAX_KL_DIV = 0.01
 DEFAULT_VF_LR = 0.01
 DEFAULT_VF_ITERS = 5
 DEFAULT_ENTROPY_COEF = 0.01
-DEFAULT_CHECKPOINT_DIR = "checkpoint_trpo_fo"
+DEFAULT_CHECKPOINT_DIR = "checkpoint_trpo_fo"         # For saving checkpoints
+DEFAULT_CHECKPOINT_LOAD_DIR = "checkpoint_trpo_fo_load" # For loading checkpoints
 DEFAULT_CHECKPOINT_FILE = None
 
 def parse_args():
@@ -39,14 +35,46 @@ def parse_args():
         description="Train LSTM-TRPO (First-Order) on MetaMaze environment."
     )
     parser.add_argument("--total_timesteps", type=int, default=DEFAULT_TOTAL_TIMESTEPS,
-                        help="Total training timesteps (default: 100000)")
+                        help="Total training timesteps (default: 500000)")
     parser.add_argument("--steps_per_update", type=int, default=DEFAULT_STEPS_PER_UPDATE,
-                        help="Timesteps collected per TRPO update (default: 30000)")
+                        help="Timesteps collected per TRPO update (default: 50000)")
     parser.add_argument("--checkpoint_dir", type=str, default=DEFAULT_CHECKPOINT_DIR,
                         help="Directory to save checkpoints (default: checkpoint_trpo_fo)")
+    parser.add_argument("--checkpoint_load_dir", type=str, default=DEFAULT_CHECKPOINT_LOAD_DIR,
+                        help="Directory to load checkpoints from (default: checkpoint_trpo_fo_load)")
     parser.add_argument("--checkpoint_file", type=str, default=DEFAULT_CHECKPOINT_FILE,
-                        help="File to load checkpoint from (default: None)")
+                        help="File to load checkpoint from (if provided, this overrides the load directory)")
     return parser.parse_args()
+
+def save_checkpoint(policy_net, total_steps, checkpoint_dir, batch_count, load_dir):
+    filename = f"trpo_ckpt_batch{batch_count}.pth"
+    checkpoint_file = os.path.join(checkpoint_dir, filename)
+    # Also update a "chkload.pth" file in the load directory for future loading.
+    chkload_file = os.path.join(load_dir, "chkload.pth")
+    checkpoint = {
+        "policy_state_dict": policy_net.state_dict(),
+        "total_steps": total_steps,
+        "batch_count": batch_count,
+    }
+    torch.save(checkpoint, checkpoint_file)
+    torch.save(checkpoint, chkload_file)
+    print(f"Checkpoint saved at step {total_steps} as {filename} (also updated chkload.pth in load dir)")
+
+def load_checkpoint(policy_net, load_dir, checkpoint_file=None):
+    # If a checkpoint_file is provided, use that; otherwise, look for chkload.pth in load_dir.
+    if checkpoint_file is None:
+        checkpoint_file = os.path.join(load_dir, "chkload.pth")
+    if os.path.isfile(checkpoint_file):
+        print(f"Loading checkpoint: {checkpoint_file}")
+        ckpt = torch.load(checkpoint_file, map_location=torch.device("cpu"))
+        policy_net.load_state_dict(ckpt["policy_state_dict"])
+        total_steps = ckpt.get("total_steps", 0)
+        batch_count = ckpt.get("batch_count", 0)
+        print(f"Resumed training from step {total_steps}, batch count {batch_count}")
+        return total_steps, batch_count
+    else:
+        print("No checkpoint found, starting from scratch.")
+        return 0, 0
 
 def pad_trials(trial_list, pad_value=0.0):
     if not trial_list:
@@ -72,14 +100,6 @@ def _batch_rnn_state(rnn_state_list):
     batched_cell = torch.stack(c_list, dim=1).squeeze(2)
     return (batched_hidden, batched_cell)
 
-def save_checkpoint(policy_net, trainer, total_steps, checkpoint_dir):
-    checkpoint_file = os.path.join(checkpoint_dir, "trpo_ckpt.pth")
-    torch.save({
-        "policy_state_dict": policy_net.state_dict(),
-        "total_steps": total_steps,
-    }, checkpoint_file)
-    print(f"Checkpoint saved at step {total_steps} -> {checkpoint_file}")
-
 def main(args=None):
     if args is None:
         args = parse_args()
@@ -87,11 +107,19 @@ def main(args=None):
     TOTAL_TIMESTEPS = args.total_timesteps
     STEPS_PER_UPDATE = args.steps_per_update
     CHECKPOINT_DIR = args.checkpoint_dir
+    LOAD_DIR = args.checkpoint_load_dir
     CHECKPOINT_FILE = args.checkpoint_file
 
+    # Create checkpoint saving directory if it does not exist.
+    if not os.path.exists(CHECKPOINT_DIR):
+        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    # Create checkpoint loading directory if it does not exist.
+    if not os.path.exists(LOAD_DIR):
+        os.makedirs(LOAD_DIR, exist_ok=True)
+
+    # Create environment.
     env = gym.make("MetaMazeDiscrete3D-v0", enable_render=False)
-    tasks_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "..", "mazes_data", "train_tasks.json")
+    tasks_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mazes_data", "train_tasks.json")
     with open(tasks_file, "r") as f:
         tasks = json.load(f)
     print(f"Loaded {len(tasks)} tasks.")
@@ -113,24 +141,17 @@ def main(args=None):
 
     total_steps = 0
     steps_since_update = 0
+    batch_update_count = 0
     task_idx = 0
     replay_buffer = []
 
-    if not os.path.exists(CHECKPOINT_DIR):
-        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    checkpoint_file = os.path.join(CHECKPOINT_DIR, "trpo_ckpt.pth") if CHECKPOINT_FILE is None else CHECKPOINT_FILE
-
-    if os.path.isfile(checkpoint_file):
-        print(f"Loading checkpoint: {checkpoint_file}")
-        ckpt = torch.load(checkpoint_file, map_location=device)
-        policy_net.load_state_dict(ckpt["policy_state_dict"])
-        total_steps = ckpt.get("total_steps", 0)
-        print(f"Resumed training from step {total_steps}")
+    # Load checkpoint if available.
+    total_steps, batch_update_count = load_checkpoint(policy_net, LOAD_DIR, CHECKPOINT_FILE)
 
     pbar = tqdm(total=TOTAL_TIMESTEPS, initial=total_steps, desc="Training")
 
     while total_steps < TOTAL_TIMESTEPS:
-        # 1) Set Task
+        # 1) Set Task using the wrapper's interface (do not use unwrapped)
         task_cfg = MazeTaskSampler(**tasks[task_idx])
         env.unwrapped.set_task(task_cfg)
         task_idx = (task_idx + 1) % len(tasks)
@@ -152,7 +173,7 @@ def main(args=None):
         trial_values = []
         trial_log_probs = []
 
-        # 3) Run one trial
+        # 3) Run one trial (episode)
         while not done and not truncated and total_steps < TOTAL_TIMESTEPS:
             obs_img = np.transpose(obs_raw, (2, 0, 1))
             H, W = obs_img.shape[1], obs_img.shape[2]
@@ -183,6 +204,7 @@ def main(args=None):
             last_reward = float(reward)
             obs_raw = obs_next
 
+        # Save rollout for this trial.
         trial_states = np.array(trial_states, dtype=np.float32)
         trial_actions = np.array(trial_actions, dtype=np.int64)
         trial_rewards = np.array(trial_rewards, dtype=np.float32)
@@ -251,22 +273,69 @@ def main(args=None):
             print(f"[TRPO UPDATE] Steps: {total_steps}, KL: {trpo_trainer.current_kl:.4f}, "
                   f"Policy Loss: {policy_loss:.4f}, Value Loss: {final_vloss:.4f}")
 
-            save_checkpoint(policy_net, trpo_trainer, total_steps, CHECKPOINT_DIR)
+            batch_update_count += 1
+            save_checkpoint(policy_net, total_steps, CHECKPOINT_DIR, batch_update_count, LOAD_DIR)
             replay_buffer.clear()
             steps_since_update = 0
             torch.cuda.empty_cache()
 
-        if total_steps % (STEPS_PER_UPDATE * 2) == 0:
-            save_checkpoint(policy_net, trpo_trainer, total_steps, CHECKPOINT_DIR)
-            torch.cuda.empty_cache()
+    # After the main loop, check if any leftover steps exceed the threshold.
+    if steps_since_update >= STEPS_PER_UPDATE:
+        rollouts = []
+        for data in replay_buffer:
+            rollouts.append({
+                'states': data['states'],
+                'actions': data['actions'],
+                'rewards': data['rewards'],
+                'values': data['values']
+            })
+        all_advantages = trpo_trainer.get_advantages(rollouts)
+
+        combined_states = []
+        combined_actions = []
+        combined_advantages = []
+        combined_old_log_probs = []
+        combined_values = []
+
+        for buffer_item, advs in zip(replay_buffer, all_advantages):
+            combined_states.append(buffer_item['states'])
+            combined_actions.append(buffer_item['actions'])
+            combined_advantages.append(advs)
+            combined_old_log_probs.append(buffer_item['log_probs'])
+            combined_values.append(buffer_item['values'])
+
+        combined_states = np.concatenate(combined_states, axis=0)
+        combined_actions = np.concatenate(combined_actions, axis=0)
+        combined_advantages = np.concatenate(combined_advantages, axis=0)
+        combined_old_log_probs = np.concatenate(combined_old_log_probs, axis=0)
+        combined_values = np.concatenate(combined_values, axis=0)
+
+        combined_states_t = torch.FloatTensor(combined_states).to(device)
+        combined_actions_t = torch.LongTensor(combined_actions).to(device)
+        combined_advantages_t = torch.FloatTensor(combined_advantages).to(device)
+        combined_old_log_probs_t = torch.FloatTensor(combined_old_log_probs).to(device)
+        combined_values_t = torch.FloatTensor(combined_values).to(device)
+
+        policy_loss, value_loss = trpo_trainer.update_policy(
+            combined_states_t,
+            combined_actions_t,
+            combined_advantages_t,
+            combined_old_log_probs_t
+        )
+        final_vloss = trpo_trainer.update_value_fun(
+            combined_states_t,
+            combined_values_t
+        )
+        print(f"[FINAL TRPO UPDATE] Steps: {total_steps}, KL: {trpo_trainer.current_kl:.4f}, "
+              f"Policy Loss: {policy_loss:.4f}, Value Loss: {final_vloss:.4f}")
+        batch_update_count += 1
+        save_checkpoint(policy_net, total_steps, CHECKPOINT_DIR, batch_update_count, LOAD_DIR)
 
     pbar.close()
     env.close()
-    save_checkpoint(policy_net, trpo_trainer, total_steps, CHECKPOINT_DIR)
+    save_checkpoint(policy_net, total_steps, CHECKPOINT_DIR, batch_update_count, LOAD_DIR)
     print(f"Training completed. Total steps: {total_steps}")
-
 
 if __name__ == "__main__":
     args = parse_args()
     main(args)
-

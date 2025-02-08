@@ -4,10 +4,17 @@ import numpy
 import gymnasium as gym
 import pygame
 from gymnasium.utils import seeding
+from gymnasium import spaces 
 from metamazium.env.maze_2d import MazeCore2D
 from metamazium.env.maze_discrete_3d import MazeCoreDiscrete3D  
 
-DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # Left, Right, Down, Up
+# Define discrete actions: mapping from an action index to a tuple (turn, step)
+# Here, we interpret:
+#   - 0: turn left (i.e. (-1, 0))
+#   - 1: turn right (i.e. (1, 0))
+#   - 2: step backward (i.e. (0, -1))
+#   - 3: step forward (i.e. (0, 1))
+DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
 class MetaMazeDiscrete3D(gym.Env):
     def __init__(self, 
@@ -69,7 +76,7 @@ class MetaMazeDiscrete3D(gym.Env):
             raise Exception('Must "reset" before doing any actions')
         if action is None:
             pygame.time.delay(100)
-            action = self.maze_core.movement_control(self.keyboard_press)
+            action = self.maze_core.movement_control(pygame.key.get_pressed())
             print(f"Keyboard Action: {action}")
         else:
             action = DISCRETE_ACTIONS[action]
