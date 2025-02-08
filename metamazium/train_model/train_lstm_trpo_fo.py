@@ -1,5 +1,3 @@
-# metamazium/train_model/train_lstm_trpo_fo.py
-
 import os
 import json
 import gymnasium as gym
@@ -9,13 +7,14 @@ from tqdm import tqdm
 import copy
 import time
 import argparse
+import random
 
 torch.autograd.set_detect_anomaly(False)
 
 import metamazium.env
 from metamazium.lstm_trpo.lstm_model import StackedLSTMPolicyValueNet
 from metamazium.lstm_trpo.trpo_fo import TRPO_FO
-from metamazium.env.maze_task import MazeTaskSampler
+from metamazium.env.maze_task import MazeTaskManager
 
 # Default hyperparameters
 DEFAULT_TOTAL_TIMESTEPS = 500000
@@ -49,7 +48,6 @@ def parse_args():
 def save_checkpoint(policy_net, total_steps, checkpoint_dir, batch_count, load_dir):
     filename = f"trpo_ckpt_batch{batch_count}.pth"
     checkpoint_file = os.path.join(checkpoint_dir, filename)
-    # Also update a "chkload.pth" file in the load directory for future loading.
     chkload_file = os.path.join(load_dir, "chkload.pth")
     checkpoint = {
         "policy_state_dict": policy_net.state_dict(),
@@ -61,7 +59,6 @@ def save_checkpoint(policy_net, total_steps, checkpoint_dir, batch_count, load_d
     print(f"Checkpoint saved at step {total_steps} as {filename} (also updated chkload.pth in load dir)")
 
 def load_checkpoint(policy_net, load_dir, checkpoint_file=None):
-    # If a checkpoint_file is provided, use that; otherwise, look for chkload.pth in load_dir.
     if checkpoint_file is None:
         checkpoint_file = os.path.join(load_dir, "chkload.pth")
     if os.path.isfile(checkpoint_file):
@@ -110,23 +107,30 @@ def main(args=None):
     LOAD_DIR = args.checkpoint_load_dir
     CHECKPOINT_FILE = args.checkpoint_file
 
-    # Create checkpoint saving directory if it does not exist.
-    if not os.path.exists(CHECKPOINT_DIR):
-        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    # Create checkpoint loading directory if it does not exist.
-    if not os.path.exists(LOAD_DIR):
-        os.makedirs(LOAD_DIR, exist_ok=True)
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    os.makedirs(LOAD_DIR, exist_ok=True)
 
     # Create environment.
     env = gym.make("MetaMazeDiscrete3D-v0", enable_render=False)
     tasks_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mazes_data", "train_tasks.json")
     with open(tasks_file, "r") as f:
-        tasks = json.load(f)
-    print(f"Loaded {len(tasks)} tasks.")
+        tasks_all = json.load(f)
+    print(f"Loaded {len(tasks_all)} tasks.")
+
+    # From the available 215 tasks, sample 200 evenly.
+    sampled_tasks = random.sample(tasks_all, 200)
+    # Repeat each task 5 times (200*5 = 1000 trials).
+    trial_tasks = []
+    for task in sampled_tasks:
+        for _ in range(5):
+            trial_tasks.append(task)
+    print(f"Using {len(trial_tasks)} trial tasks (200 tasks sampled 5 times each).")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Initialize policy network and TRPO_FO trainer.
+    # Initialize policy network and TRPO trainer.
+    from metamazium.lstm_trpo.lstm_model import StackedLSTMPolicyValueNet
+    from metamazium.lstm_trpo.trpo_fo import TRPO_FO
     policy_net = StackedLSTMPolicyValueNet(action_dim=4, hidden_size=512, num_layers=2).to(device)
     trpo_trainer = TRPO_FO(
         policy=policy_net,
@@ -145,21 +149,24 @@ def main(args=None):
     task_idx = 0
     replay_buffer = []
 
-    # Load checkpoint if available.
     total_steps, batch_update_count = load_checkpoint(policy_net, LOAD_DIR, CHECKPOINT_FILE)
 
     pbar = tqdm(total=TOTAL_TIMESTEPS, initial=total_steps, desc="Training")
 
     while total_steps < TOTAL_TIMESTEPS:
-        # 1) Set Task using the wrapper's interface (do not use unwrapped)
-        task_cfg = MazeTaskSampler(**tasks[task_idx])
+        # For each trial, reconstruct the task configuration from trial_tasks.
+        # (Note: The task dictionary does not include randomized start/goal.)
+        task_cfg = MazeTaskManager.TaskConfig(**trial_tasks[task_idx])
         env.unwrapped.set_task(task_cfg)
-        task_idx = (task_idx + 1) % len(tasks)
+        task_idx = (task_idx + 1) % len(trial_tasks)
 
-        # 2) Reset environment and RNN memory
+        # Reset environment and RNN memory.
         policy_net.reset_memory(batch_size=1, device=device)
         obs_raw, _ = env.reset()
+        # Randomize start and goal for this trial.
         env.unwrapped.maze_core.randomize_start()
+        # The randomize_goal method has been updated to relax the distance if needed.
+        env.unwrapped.maze_core.randomize_goal(min_distance=3.0)
 
         done = False
         truncated = False
@@ -173,7 +180,7 @@ def main(args=None):
         trial_values = []
         trial_log_probs = []
 
-        # 3) Run one trial (episode)
+        # Run one trial (episode).
         while not done and not truncated and total_steps < TOTAL_TIMESTEPS:
             obs_img = np.transpose(obs_raw, (2, 0, 1))
             H, W = obs_img.shape[1], obs_img.shape[2]
@@ -204,7 +211,6 @@ def main(args=None):
             last_reward = float(reward)
             obs_raw = obs_next
 
-        # Save rollout for this trial.
         trial_states = np.array(trial_states, dtype=np.float32)
         trial_actions = np.array(trial_actions, dtype=np.int64)
         trial_rewards = np.array(trial_rewards, dtype=np.float32)
@@ -219,10 +225,8 @@ def main(args=None):
             'log_probs': trial_log_probs
         })
 
-        # Clear cache after each trial.
         torch.cuda.empty_cache()
 
-        # 4) Update policy if enough steps have been collected.
         if steps_since_update >= STEPS_PER_UPDATE:
             rollouts = []
             for data in replay_buffer:
@@ -279,7 +283,6 @@ def main(args=None):
             steps_since_update = 0
             torch.cuda.empty_cache()
 
-    # After the main loop, check if any leftover steps exceed the threshold.
     if steps_since_update >= STEPS_PER_UPDATE:
         rollouts = []
         for data in replay_buffer:

@@ -1,5 +1,4 @@
-# metamazium\env\maze_base.py
-
+# metamazium/env/maze_base.py
 import os
 import numpy
 import pygame
@@ -19,12 +18,15 @@ class MazeBase(object):
         self.phase = 1  # 1 for exploration, 2 for testing
         self.phase_step_limit = kw_args.get('phase_step_limit', 250)  # Steps per phase
         self.current_phase_steps = 0  # Initialize step counter for the current phase
-        # print(f"MazeBase initialized with Phase Step Limit: {self.phase_step_limit}")
 
     def set_task(self, task_config):
-        # initialize textures
-        self._cell_walls = numpy.copy(task_config.cell_walls)
-        self._cell_texts = task_config.cell_texts
+        # Initialize textures and parameters.
+        # (Make sure that if these are loaded from JSON they are converted to NumPy arrays.)
+        import numpy as np
+        self._cell_walls = numpy.copy(task_config.cell_walls if isinstance(task_config.cell_walls, numpy.ndarray) 
+                                        else np.array(task_config.cell_walls))
+        self._cell_texts = task_config.cell_texts if isinstance(task_config.cell_texts, numpy.ndarray) \
+                             else np.array(task_config.cell_texts)
         self._start = task_config.start
         self._n = numpy.shape(self._cell_walls)[0]
         self._goal = task_config.goal
@@ -48,11 +50,7 @@ class MazeBase(object):
         self._agent_loc = self.get_cell_center(self._start)
         self._goal_loc = self.get_cell_center(self._goal)
         self._agent_trajectory = [numpy.copy(self._agent_grid)]
-
-        # Maximum width and height in the space
         self._size = self._n * self._cell_size
-
-        # Valid in 3D
         self._agent_ori = 0.0
 
         if self.task_type == "SURVIVAL":
@@ -63,13 +61,10 @@ class MazeBase(object):
             self._cell_transparents = self._cur_food_rewards
         elif self.task_type == "ESCAPE":
             self._cell_transparents = numpy.zeros_like(self._cell_walls, dtype="int32")
-            self._cell_transparents[self._goal] = 1.0
+            self._cell_transparents[self._goal[0], self._goal[1]] = 1.0
 
-        # Reset phase-related attributes
         self.phase = 1
         self.current_phase_steps = 0
-        # print("Environment reset: Phase set to 1 and step counter reset.")
-
         self.update_observation()
         self.steps = 0
         return self.get_observation()
@@ -78,10 +73,8 @@ class MazeBase(object):
         self.steps += 1
         self._agent_trajectory.append(numpy.copy(self._agent_grid))
         agent_grid_idx = tuple(self._agent_grid)
-
         if self.task_type == "SURVIVAL":
             if self._cur_food_rewards[agent_grid_idx] > 1.0e-2:
-                # Get the food
                 reward = self._cur_food_rewards[agent_grid_idx]
                 self._food_wait_refresh[agent_grid_idx] = 1
                 self._cur_food_rewards[agent_grid_idx] = 0.0
@@ -90,26 +83,20 @@ class MazeBase(object):
             self._life += reward + self._step_reward
             self._life = min(self._life, self._max_life)
             done = self._life < 0.0 or self.episode_is_over()
-
-            # Refresh the food where necessary
             self._food_revival_count -= self._food_wait_refresh
             for idxes in numpy.argwhere(self._food_revival_count < 0):
                 tidx = tuple(idxes)
                 self._cur_food_rewards[tidx] = self._food_rewards[tidx]
                 self._food_revival_count[tidx] = self._food_interval[tidx]
                 self._food_wait_refresh[tidx] = 0
-
         elif self.task_type == "ESCAPE":
             goal = (tuple(self._goal) == agent_grid_idx)
             if self.phase == 1:
-                # Exploration Phase: Encourage exploration
                 reward = self._step_reward
-                done = False  # Don't terminate based on goal
+                done = False
             elif self.phase == 2:
-                # Testing Phase: Reward for reaching the goal
                 reward = self._step_reward + goal * self._goal_reward
                 done = goal or self.episode_is_over()
-
         return reward, done
 
     def do_action(self, action):
@@ -118,13 +105,9 @@ class MazeBase(object):
     def render_init(self, view_size):
         font.init()
         self._font = font.SysFont("Arial", 18)
-
-        # Initialize the agent drawing
         self._render_cell_size = view_size / self._n
         self._view_size = view_size
-
         self._obs_logo = self._font.render("Observation", 0, pygame.Color("red"))
-
         self._screen = pygame.Surface((2 * view_size, view_size))
         self._screen = pygame.display.set_mode((2 * view_size, view_size))
         pygame.display.set_caption("RandomMazeRender - GodView")
@@ -184,14 +167,10 @@ class MazeBase(object):
         raise NotImplementedError()
 
     def render_update(self):
-        # Paint God View
         self._screen.blit(self._surf_god, (self._view_size, 0))
         if self.task_type == "SURVIVAL":
             self.draw_food(self._screen, (self._view_size, 0))
-
-        # Paint Agent and Observation
         self.render_observation()
-
         pygame.display.update()
         done = False
         for event in pygame.event.get():
@@ -201,16 +180,13 @@ class MazeBase(object):
         return done, keys
 
     def render_trajectory(self, file_name, additional=None):
-        # Render god view with record on the trajectory
         if additional is not None:
             aw, ah = additional["surfaces"][0].get_width(), additional["surfaces"][0].get_height()
         else:
             aw, ah = (0, 0)
-
         traj_screen = pygame.Surface((self._view_size + aw, max(self._view_size, ah)))
         traj_screen.fill(pygame.Color("white"))
         traj_screen.blit(self._surf_god, (0, 0))
-
         pygame.draw.rect(
             traj_screen,
             pygame.Color("red"),
@@ -224,15 +200,12 @@ class MazeBase(object):
         )
         if self.task_type == "SURVIVAL":
             self.draw_food(traj_screen, (0, 0))
-
         for i in range(len(self._agent_trajectory) - 1):
             p = self._agent_trajectory[i]
             n = self._agent_trajectory[i + 1]
             p = [(p[0] + 0.5) * self._render_cell_size, self._view_size - (p[1] + 0.5) * self._render_cell_size]
             n = [(n[0] + 0.5) * self._render_cell_size, self._view_size - (n[1] + 0.5) * self._render_cell_size]
             pygame.draw.line(traj_screen, pygame.Color("red"), p, n, width=3)
-
-        # Paint some additional surfaces where necessary
         if additional is not None:
             for i in range(len(additional["surfaces"])):
                 traj_screen.blit(additional["surfaces"][i], (self._view_size, 0))

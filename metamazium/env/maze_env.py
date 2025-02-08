@@ -5,7 +5,6 @@ import gymnasium as gym
 import pygame
 from gymnasium.utils import seeding
 from gymnasium import spaces 
-from metamazium.env.maze_2d import MazeCore2D
 from metamazium.env.maze_discrete_3d import MazeCoreDiscrete3D  
 
 # Define discrete actions: mapping from an action index to a tuple (turn, step)

@@ -1,4 +1,4 @@
-# train_model/train_snail_trpo_fo.py
+# metamazium/train_model/train_snail_trpo_fo.py
 
 import os
 import json
@@ -7,11 +7,14 @@ import numpy as np
 import torch
 from tqdm import tqdm
 import argparse
+import random
+
+torch.autograd.set_detect_anomaly(False)
 
 import metamazium.env
 from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
 from metamazium.snail_performer.trpo_fo import TRPO_FO
-from metamazium.env.maze_task import MazeTaskSampler
+from metamazium.env.maze_task import MazeTaskManager  # Use TaskConfig for reconstruction
 
 # Default hyperparameters
 DEFAULT_TOTAL_TIMESTEPS = 500000
@@ -119,17 +122,27 @@ def main(args=None):
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(LOAD_DIR, exist_ok=True)
 
-    # Create the environment.
+    # Create environment.
     env = gym.make("MetaMazeDiscrete3D-v0", enable_render=False)
+    # Load the unique tasks (which include full maze layouts) from JSON.
     tasks_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mazes_data", "train_tasks.json")
     with open(tasks_file, "r") as f:
-        tasks = json.load(f)
-    print(f"Loaded {len(tasks)} tasks.")
+        tasks_all = json.load(f)
+    print(f"Loaded {len(tasks_all)} unique tasks.")
+
+    # From the available tasks (e.g. 215), sample 200 tasks evenly.
+    # (Adjust the sampling as needed.)
+    sampled_tasks = random.sample(tasks_all, 200)
+    # Repeat each sampled task 5 times (200*5 = 1000 trials).
+    trial_tasks = []
+    for task in sampled_tasks:
+        for _ in range(5):
+            trial_tasks.append(task)
+    print(f"Using {len(trial_tasks)} trial tasks (each of 200 tasks repeated 5 times).")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Initialize SNAIL policy network.
-    # For example, seq_len is set to 500 (for 2 episodes of 250 timesteps each) as in the paper.
+    # Initialize SNAIL policy network and TRPO trainer.
     policy_net = SNAILPolicyValueNet(
         action_dim=4,
         base_dim=256,
@@ -142,7 +155,6 @@ def main(args=None):
         num_heads=1
     ).to(device)
 
-    # Initialize TRPO trainer.
     trpo_trainer = TRPO_FO(
         policy=policy_net,
         value_fun=policy_net,
@@ -165,14 +177,23 @@ def main(args=None):
     pbar = tqdm(total=TOTAL_TIMESTEPS, initial=total_steps, desc="Training")
 
     while total_steps < TOTAL_TIMESTEPS:
-        # 1) Sample a new task.
-        task_cfg = MazeTaskSampler(**tasks[task_idx])
+        # Reconstruct the task configuration using the saved parameters.
+        # (We use MazeTaskManager.TaskConfig to reconstruct instead of MazeTaskSampler.)
+        task_cfg = MazeTaskManager.TaskConfig(**trial_tasks[task_idx])
         env.unwrapped.set_task(task_cfg)
-        task_idx = (task_idx + 1) % len(tasks)
+        task_idx = (task_idx + 1) % len(trial_tasks)
 
-        # 2) Reset the environment.
+        # Reset environment and (if applicable) RNN memory.
+        if hasattr(policy_net, "reset_memory"):
+            policy_net.reset_memory(batch_size=1, device=device)
         obs_raw, _ = env.reset()
+
+        # Randomize start and goal for this trial.
         env.unwrapped.maze_core.randomize_start()
+        try:
+            env.unwrapped.maze_core.randomize_goal(min_distance=3.0)
+        except Exception as e:
+            print(f"Warning: randomize_goal failed: {e}. Using current goal.")
 
         done = False
         truncated = False
@@ -186,54 +207,44 @@ def main(args=None):
         trial_values = []
         trial_log_probs = []
 
-        # 3) Run one trial.
+        # Run one trial (episode).
         while not done and not truncated and total_steps < TOTAL_TIMESTEPS:
             obs_img = np.transpose(obs_raw, (2, 0, 1))  # (3, H, W)
             H, W = obs_img.shape[1], obs_img.shape[2]
             c3 = np.full((1, H, W), last_action, dtype=np.float32)
             c4 = np.full((1, H, W), last_reward, dtype=np.float32)
             c5 = np.full((1, H, W), boundary_bit, dtype=np.float32)
-            obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)  # (6, H, W)
+            obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)
             trial_states.append(obs_6ch)
 
-            # Append the current action (if any) to a list for this trial.
-            # We accumulate the actions, rewards, values, and log_probs per timestep.
-            # For this trial, they are stored as lists.
-            # Build the current trajectory (so far) for this trial.
-            current_seq = np.stack(trial_states, axis=0)  # shape: (L, 6, H, W)
-            current_seq = np.expand_dims(current_seq, axis=0)  # shape: (1, L, 6, H, W)
-            obs_t = torch.from_numpy(current_seq).float().to(device)
-
             with torch.no_grad():
-                # Use act_single_step to get logits and value at the final timestep.
-                logits, value = policy_net.act_single_step(obs_t)
+                obs_t = torch.from_numpy(obs_6ch[None, None]).float().to(device)
+                logits, val = policy_net.act_single_step(obs_t)
+                # Use the logits directly to sample an action.
                 dist = torch.distributions.Categorical(logits=logits)
                 action = dist.sample()
                 log_prob = dist.log_prob(action)
 
-            trial_actions.append(action.item())
-            trial_values.append(value.item())
-            trial_log_probs.append(log_prob.item())
-            trial_rewards.append(0.0)  # placeholder
-
-            DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
             obs_next, reward, done, truncated, info = env.step(action.item())
-            trial_rewards[-1] = reward
+
+            trial_actions.append(action.item())
+            trial_values.append(val.item())
+            trial_log_probs.append(log_prob.item())
+            trial_rewards.append(reward)
 
             total_steps += 1
             steps_since_update += 1
             pbar.update(1)
-
             last_action = float(action.item())
             last_reward = float(reward)
             obs_raw = obs_next
 
-        # End of trial: store rollout.
-        trial_states_np = np.array(trial_states, dtype=np.float32)  # shape: (L, 6, H, W)
-        trial_actions_np = np.array(trial_actions, dtype=np.int64)   # shape: (L,)
-        trial_rewards_np = np.array(trial_rewards, dtype=np.float32)   # shape: (L,)
-        trial_values_np = np.array(trial_values, dtype=np.float32)     # shape: (L,)
-        trial_log_probs_np = np.array(trial_log_probs, dtype=np.float32)  # shape: (L,)
+        # Convert trial data to numpy arrays.
+        trial_states_np = np.array(trial_states, dtype=np.float32)
+        trial_actions_np = np.array(trial_actions, dtype=np.int64)
+        trial_rewards_np = np.array(trial_rewards, dtype=np.float32)
+        trial_values_np = np.array(trial_values, dtype=np.float32)
+        trial_log_probs_np = np.array(trial_log_probs, dtype=np.float32)
 
         replay_buffer.append({
             'states': trial_states_np,
@@ -245,13 +256,9 @@ def main(args=None):
 
         torch.cuda.empty_cache()
 
-        # 4) Update policy if enough steps have been collected.
         if steps_since_update >= STEPS_PER_UPDATE:
+            # Prepare rollouts and compute advantages.
             rollouts = []
-            actions_list = []
-            rewards_list = []
-            values_list = []
-            log_probs_list = []
             for data in replay_buffer:
                 rollouts.append({
                     'states': data['states'],
@@ -259,21 +266,27 @@ def main(args=None):
                     'rewards': data['rewards'],
                     'values': data['values']
                 })
-                actions_list.append(data['actions'])
-                rewards_list.append(data['rewards'])
-                values_list.append(data['values'])
-                log_probs_list.append(data['log_probs'])
             all_advantages = trpo_trainer.get_advantages(rollouts)
 
-            # Pad image trajectories.
-            combined_states = pad_trials([data['states'] for data in replay_buffer])  # (N, T, 6, H, W)
-            # Pad 1D arrays for actions, advantages, log_probs, and values.
-            combined_actions = pad_trials_1d([data['actions'] for data in replay_buffer])
-            combined_advantages = pad_trials_1d(all_advantages)
-            combined_old_log_probs = pad_trials_1d([data['log_probs'] for data in replay_buffer])
-            combined_values = pad_trials_1d([data['values'] for data in replay_buffer])
+            combined_states = []
+            combined_actions = []
+            combined_advantages = []
+            combined_old_log_probs = []
+            combined_values = []
 
-            # Convert to tensors.
+            for buffer_item, advs in zip(replay_buffer, all_advantages):
+                combined_states.append(buffer_item['states'])
+                combined_actions.append(buffer_item['actions'])
+                combined_advantages.append(advs)
+                combined_old_log_probs.append(buffer_item['log_probs'])
+                combined_values.append(buffer_item['values'])
+
+            combined_states = np.concatenate(combined_states, axis=0)
+            combined_actions = np.concatenate(combined_actions, axis=0)
+            combined_advantages = np.concatenate(combined_advantages, axis=0)
+            combined_old_log_probs = np.concatenate(combined_old_log_probs, axis=0)
+            combined_values = np.concatenate(combined_values, axis=0)
+
             combined_states_t = torch.FloatTensor(combined_states).to(device)
             combined_actions_t = torch.LongTensor(combined_actions).to(device)
             combined_advantages_t = torch.FloatTensor(combined_advantages).to(device)
@@ -299,13 +312,8 @@ def main(args=None):
             steps_since_update = 0
             torch.cuda.empty_cache()
 
-    # Final update if leftover steps exist.
     if steps_since_update >= STEPS_PER_UPDATE:
         rollouts = []
-        actions_list = []
-        rewards_list = []
-        values_list = []
-        log_probs_list = []
         for data in replay_buffer:
             rollouts.append({
                 'states': data['states'],

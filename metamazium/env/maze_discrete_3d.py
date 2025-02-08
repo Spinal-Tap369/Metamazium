@@ -4,7 +4,9 @@ import numpy as np
 import pygame
 from gymnasium import spaces
 from gymnasium.utils import seeding
+import copy
 from copy import deepcopy
+import random
 
 from metamazium.env.maze_base import MazeBase
 from metamazium.env.ray_caster_utils import maze_view
@@ -251,13 +253,44 @@ class MazeCoreDiscrete3D(MazeBase):
         return np.copy(self._observation)
     
     def randomize_start(self):
-        valid_cells = [ (i, j) for i in range(self._n) for j in range(self._n) if self._cell_walls[i, j] == 0 ]
-        new_start = None
-        while True:
-            candidate = valid_cells[np.random.randint(0, len(valid_cells))]
-            if candidate != tuple(self._goal):
-                new_start = candidate
-                break
+        """
+        Randomizes the agent’s starting cell from among the passable cells.
+        Also updates self._start so that subsequent goal sampling uses this new value.
+        """
+        valid_cells = [(i, j) for i in range(self._n) for j in range(self._n)
+                       if self._cell_walls[i, j] == 0]
+        # Randomly choose a new start.
+        new_start = random.choice(valid_cells)
         self._agent_grid = np.array(new_start)
         self._agent_loc = self.get_cell_center(self._agent_grid)
-        self._starting_position = deepcopy(self._agent_grid)
+        self._starting_position = copy.deepcopy(self._agent_grid)
+        # Update the official start used for goal sampling.
+        self._start = tuple(new_start)
+        
+    def randomize_goal(self, min_distance=3.0):
+        """
+        Randomizes the goal cell from among the passable cells such that the new goal is at
+        least min_distance (in cell units) away from the current self._start.
+        If no cell meets the criterion, the min_distance is relaxed gradually.
+        In ESCAPE mode, update the goal indicator in _cell_transparents.
+        """
+        valid_cells = [(i, j) for i in range(self._n) for j in range(self._n)
+                       if self._cell_walls[i, j] == 0]
+        current_min_distance = min_distance
+        filtered = [cell for cell in valid_cells
+                    if np.linalg.norm(np.array(cell) - np.array(self._start)) >= current_min_distance]
+        # Relax the criterion if necessary.
+        while not filtered:
+            current_min_distance *= 0.9  # reduce by 10%
+            if current_min_distance < 0.5:
+                filtered = valid_cells
+                break
+            filtered = [cell for cell in valid_cells
+                        if np.linalg.norm(np.array(cell) - np.array(self._start)) >= current_min_distance]
+        new_goal = random.choice(filtered)
+        self._goal = tuple(new_goal)
+        # In ESCAPE mode, update the goal indicator.
+        if self.task_type == "ESCAPE":
+            self._cell_transparents = np.zeros_like(self._cell_walls, dtype="int32")
+            self._cell_transparents[self._goal] = 1
+
