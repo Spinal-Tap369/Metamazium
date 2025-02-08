@@ -52,9 +52,7 @@ def flat_grad(output, param_list, create_graph=False, retain_graph=False):
             out.append(g.reshape(-1))
     return torch.cat(out)
 
-
 # Backtracking Line Search
-
 def line_search(param_list, f, x, fullstep, expected_improve_rate, max_kl,
                 max_backtracks=10, accept_ratio=0.1):
     """
@@ -79,7 +77,6 @@ def line_search(param_list, f, x, fullstep, expected_improve_rate, max_kl,
     return False, x
 
 # TRPO_FO Class (First-Order TRPO using only first-order gradients)
-
 class TRPO_FO:
     """
     A first-order TRPO implementation that uses only the first-order gradient.
@@ -141,12 +138,6 @@ class TRPO_FO:
     def update_policy(self, states, actions, advantages, old_log_probs):
         """
         Perform a first-order policy update.
-        
-        Computes the surrogate loss and its gradient, uses the negative gradient as the update
-        direction, and performs a backtracking line search to enforce the KL constraint.
-        
-        Returns:
-            (policy_loss, dummy_value_loss=0.0)
         """
         old_params = flatten_params(self.policy_params)
 
@@ -155,7 +146,7 @@ class TRPO_FO:
             log_prob = dist.log_prob(actions)
             ratio = torch.exp(log_prob - old_log_probs)
             surr = ratio * advantages
-            loss = -surr.mean()  # We minimize negative surrogate.
+            loss = -surr.mean()  # minimize negative surrogate
             with torch.no_grad():
                 dist_old = Categorical(logits=dist.logits.detach())
             kl = torch.mean(kl_divergence(dist_old, dist))
@@ -163,8 +154,7 @@ class TRPO_FO:
 
         loss_old, kl_old = get_loss_kl()
         grad = flat_grad(loss_old, self.policy_params, create_graph=False, retain_graph=False)
-        full_step = -grad  # first-order update direction (gradient descent step)
-
+        full_step = -grad  # first-order update direction
         exp_improve = -(grad * full_step).sum()
 
         def line_search_loss_kl():
@@ -203,16 +193,29 @@ class TRPO_FO:
     # ------------------- Internal Helpers ------------------- #
 
     def _forward_dist(self, states):
+        # If states already have 5 dimensions, do not unsqueeze.
+        if states.dim() == 5:
+            input_to_policy = states
+        else:
+            input_to_policy = states.unsqueeze(1)
         logits, _, _ = self.policy.forward_with_state(
-            states.unsqueeze(1),
+            input_to_policy,
             self._dummy_rnn_state(states.size(0))
         )
-        logits = logits.squeeze(1)
+        # If an extra dimension was added, squeeze it.
+        if logits.dim() == 4:
+            logits = logits
+        else:
+            logits = logits.squeeze(1)
         return Categorical(logits=logits)
 
     def _forward_value(self, states):
+        if states.dim() == 5:
+            input_to_policy = states
+        else:
+            input_to_policy = states.unsqueeze(1)
         _, values, _ = self.value_fun.forward_with_state(
-            states.unsqueeze(1),
+            input_to_policy,
             self._dummy_rnn_state(states.size(0))
         )
         return values

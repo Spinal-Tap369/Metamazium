@@ -2,7 +2,7 @@
 
 from .cnn_encoder import CNNEncoder
 from .lstm_model import StackedLSTMPolicyValueNet
-from .trpo import TRPO
+from .trpo_fo import TRPO_FO
 
 __all__ = [
     "CNNEncoder",
