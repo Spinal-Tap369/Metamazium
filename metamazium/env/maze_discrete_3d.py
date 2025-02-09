@@ -223,8 +223,8 @@ class MazeCoreDiscrete3D(MazeBase):
             return (1, 0)
         if keys[pygame.K_UP]:
             return (0, 1)
-        if keys[pygame.K_DOWN]:
-            return (0, 0)
+        # if keys[pygame.K_DOWN]:
+        #     return (0, 0)
         return (0, 0)
 
     def update_observation(self):

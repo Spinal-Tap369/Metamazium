@@ -8,7 +8,7 @@ import numpy as np
 from torch.distributions import Categorical, kl_divergence
 from torch.optim import Adam
 
-# Basic Torch Utilities (Param-list based)
+# Torch Utilities (Param-list based)
 def flatten_params(param_list):
     """Flatten a list of parameters (Tensor) into a single 1D tensor."""
     return torch.cat([p.data.view(-1) for p in param_list])

@@ -16,7 +16,7 @@ torch.autograd.set_detect_anomaly(False)
 import metamazium.env
 from metamazium.lstm_trpo.lstm_model import StackedLSTMPolicyValueNet
 from metamazium.lstm_trpo.trpo_fo import TRPO_FO
-from metamazium.env.maze_task import MazeTaskManager
+from metamazium.env.maze_task import MazeTaskManager  # Use TaskConfig for reconstruction
 
 # Default hyperparameters
 DEFAULT_TOTAL_TIMESTEPS = 500000
@@ -27,8 +27,8 @@ DEFAULT_MAX_KL_DIV = 0.01
 DEFAULT_VF_LR = 0.01
 DEFAULT_VF_ITERS = 5
 DEFAULT_ENTROPY_COEF = 0.01
-DEFAULT_CHECKPOINT_DIR = "checkpoint_trpo_fo"         # For saving checkpoints
-DEFAULT_CHECKPOINT_LOAD_DIR = "checkpoint_trpo_fo_load" # For loading checkpoints
+DEFAULT_CHECKPOINT_DIR = "checkpoint_trpo_fo"
+DEFAULT_CHECKPOINT_LOAD_DIR = "checkpoint_trpo_fo_load"
 DEFAULT_CHECKPOINT_FILE = None
 
 def parse_args():
@@ -61,7 +61,7 @@ def save_checkpoint(policy_net, total_steps, checkpoint_dir, batch_count, load_d
     print(f"Checkpoint saved at step {total_steps} as {filename} (also updated chkload.pth in load dir)")
 
 def load_checkpoint(policy_net, load_dir, checkpoint_file=None):
-    if checkpoint_file is None:
+    if checkpoint_file is None or checkpoint_file == "":
         checkpoint_file = os.path.join(load_dir, "chkload.pth")
     if os.path.isfile(checkpoint_file):
         print(f"Loading checkpoint: {checkpoint_file}")
@@ -83,21 +83,25 @@ def pad_trials(trial_list, pad_value=0.0):
     for trial in trial_list:
         T = trial.shape[0]
         if T < max_T:
-            pad_width = [(0, max_T - T)] + [(0, 0)] * (trial.ndim - 1)
+            pad_width = [(0, max_T - T), (0, 0), (0, 0), (0, 0)]
             trial_padded = np.pad(trial, pad_width, mode='constant', constant_values=pad_value)
         else:
             trial_padded = trial
         padded_trials.append(trial_padded)
     return np.stack(padded_trials, axis=0)
 
-def _batch_rnn_state(rnn_state_list):
-    if not rnn_state_list:
-        return None
-    h_list = [state[0] for state in rnn_state_list]
-    c_list = [state[1] for state in rnn_state_list]
-    batched_hidden = torch.stack(h_list, dim=1).squeeze(2)
-    batched_cell = torch.stack(c_list, dim=1).squeeze(2)
-    return (batched_hidden, batched_cell)
+def pad_trials_1d(trial_list, pad_value=0):
+    if not trial_list:
+        return np.array([])
+    max_T = max(trial.shape[0] for trial in trial_list)
+    padded_trials = []
+    for trial in trial_list:
+        if trial.shape[0] < max_T:
+            trial_padded = np.pad(trial, (0, max_T - trial.shape[0]), mode='constant', constant_values=pad_value)
+        else:
+            trial_padded = trial
+        padded_trials.append(trial_padded)
+    return np.stack(padded_trials, axis=0)
 
 def main(args=None):
     if args is None:
@@ -119,19 +123,18 @@ def main(args=None):
         tasks_all = json.load(f)
     print(f"Loaded {len(tasks_all)} tasks.")
 
-    # From the available 215 tasks, sample 200 evenly.
+    # Sample 200 tasks and repeat each 5 times.
     sampled_tasks = random.sample(tasks_all, 200)
-    # Repeat each task 5 times (200*5 = 1000 trials).
     trial_tasks = []
     for task in sampled_tasks:
         for _ in range(5):
             trial_tasks.append(task)
-    print(f"Using {len(trial_tasks)} trial tasks (200 tasks sampled 5 times each).")
+    print(f"Using {len(trial_tasks)} trial tasks (200 tasks repeated 5 times).")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Initialize policy network and TRPO trainer.
-    policy_net = StackedLSTMPolicyValueNet(action_dim=4, hidden_size=512, num_layers=2).to(device)
+    # Initialize the LSTM policy network and TRPO trainer.
+    policy_net = StackedLSTMPolicyValueNet(action_dim=3, hidden_size=512, num_layers=2).to(device)
     trpo_trainer = TRPO_FO(
         policy=policy_net,
         value_fun=policy_net,
@@ -153,55 +156,70 @@ def main(args=None):
 
     pbar = tqdm(total=TOTAL_TIMESTEPS, initial=total_steps, desc="Training")
 
+    # For each trial, track phase transitions to set the boundary bit.
     while total_steps < TOTAL_TIMESTEPS:
-        # For each trial, reconstruct the task configuration from trial_tasks.
+        # Reconstruct task configuration.
         task_cfg = MazeTaskManager.TaskConfig(**trial_tasks[task_idx])
         env.unwrapped.set_task(task_cfg)
         task_idx = (task_idx + 1) % len(trial_tasks)
 
-        # Reset environment and RNN memory.
+        # Reset environment and LSTM memory.
         policy_net.reset_memory(batch_size=1, device=device)
         obs_raw, _ = env.reset()
-        # Randomize start and goal for this trial.
+
+        # Randomize start and goal.
         env.unwrapped.maze_core.randomize_start()
-        # The randomize_goal method has been updated to relax the distance if needed.
-        env.unwrapped.maze_core.randomize_goal(min_distance=3.0)
+        try:
+            env.unwrapped.maze_core.randomize_goal(min_distance=3.0)
+        except Exception as e:
+            print(f"Warning: randomize_goal failed: {e}. Using current goal.")
 
         done = False
         truncated = False
         last_action = 0.0
         last_reward = 0.0
-        boundary_bit = 1.0
+        # Initialize boundary bit to 0
+        boundary_bit = 0.0
 
-        trial_states = []
+        # Get initial phase.
+        prev_phase = env.unwrapped.maze_core.phase
+
+        trial_states = []    # List of (6, H, W) observations.
         trial_actions = []
         trial_rewards = []
         trial_values = []
         trial_log_probs = []
 
-        # Run one trial (episode).
         while not done and not truncated and total_steps < TOTAL_TIMESTEPS:
-            obs_img = np.transpose(obs_raw, (2, 0, 1))
+            # Check phase; if transition from phase 1 to phase 2 occurs, set boundary_bit to 1.
+            current_phase = env.unwrapped.maze_core.phase
+            if prev_phase == 1 and current_phase == 2:
+                boundary_bit = 1.0
+            else:
+                boundary_bit = 0.0
+            prev_phase = current_phase
+
+            obs_img = np.transpose(obs_raw, (2, 0, 1))  # (3, H, W)
             H, W = obs_img.shape[1], obs_img.shape[2]
             c3 = np.full((1, H, W), last_action, dtype=np.float32)
             c4 = np.full((1, H, W), last_reward, dtype=np.float32)
             c5 = np.full((1, H, W), boundary_bit, dtype=np.float32)
             obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)
+            trial_states.append(obs_6ch)
 
             with torch.no_grad():
                 obs_t = torch.from_numpy(obs_6ch[None, None]).float().to(device)
-                logits_t, val_t = policy_net.act_single_step(obs_t)
-                dist = torch.distributions.Categorical(logits=logits_t.squeeze(1))
+                logits, val = policy_net.act_single_step(obs_t)
+                dist = torch.distributions.Categorical(logits=logits)
                 action = dist.sample()
                 log_prob = dist.log_prob(action)
 
             obs_next, reward, done, truncated, info = env.step(action.item())
 
-            trial_states.append(obs_6ch)
             trial_actions.append(action.item())
-            trial_rewards.append(reward)
-            trial_values.append(val_t.item())
+            trial_values.append(val.item())
             trial_log_probs.append(log_prob.item())
+            trial_rewards.append(reward)
 
             total_steps += 1
             steps_since_update += 1
@@ -210,23 +228,25 @@ def main(args=None):
             last_reward = float(reward)
             obs_raw = obs_next
 
-        trial_states = np.array(trial_states, dtype=np.float32)
-        trial_actions = np.array(trial_actions, dtype=np.int64)
-        trial_rewards = np.array(trial_rewards, dtype=np.float32)
-        trial_values = np.array(trial_values, dtype=np.float32)
-        trial_log_probs = np.array(trial_log_probs, dtype=np.float32)
+        # Save trial data.
+        trial_states_np = np.array(trial_states, dtype=np.float32)
+        trial_actions_np = np.array(trial_actions, dtype=np.int64)
+        trial_rewards_np = np.array(trial_rewards, dtype=np.float32)
+        trial_values_np = np.array(trial_values, dtype=np.float32)
+        trial_log_probs_np = np.array(trial_log_probs, dtype=np.float32)
 
         replay_buffer.append({
-            'states': trial_states,
-            'actions': trial_actions,
-            'rewards': trial_rewards,
-            'values': trial_values,
-            'log_probs': trial_log_probs
+            'states': trial_states_np,
+            'actions': trial_actions_np,
+            'rewards': trial_rewards_np,
+            'values': trial_values_np,
+            'log_probs': trial_log_probs_np
         })
 
         torch.cuda.empty_cache()
 
         if steps_since_update >= STEPS_PER_UPDATE:
+            # Prepare rollouts and compute advantages.
             rollouts = []
             for data in replay_buffer:
                 rollouts.append({
@@ -262,7 +282,7 @@ def main(args=None):
             combined_old_log_probs_t = torch.FloatTensor(combined_old_log_probs).to(device)
             combined_values_t = torch.FloatTensor(combined_values).to(device)
 
-            policy_loss, value_loss = trpo_trainer.update_policy(
+            policy_loss, _ = trpo_trainer.update_policy(
                 combined_states_t,
                 combined_actions_t,
                 combined_advantages_t,
@@ -292,25 +312,11 @@ def main(args=None):
                 'values': data['values']
             })
         all_advantages = trpo_trainer.get_advantages(rollouts)
-
-        combined_states = []
-        combined_actions = []
-        combined_advantages = []
-        combined_old_log_probs = []
-        combined_values = []
-
-        for buffer_item, advs in zip(replay_buffer, all_advantages):
-            combined_states.append(buffer_item['states'])
-            combined_actions.append(buffer_item['actions'])
-            combined_advantages.append(advs)
-            combined_old_log_probs.append(buffer_item['log_probs'])
-            combined_values.append(buffer_item['values'])
-
-        combined_states = np.concatenate(combined_states, axis=0)
-        combined_actions = np.concatenate(combined_actions, axis=0)
-        combined_advantages = np.concatenate(combined_advantages, axis=0)
-        combined_old_log_probs = np.concatenate(combined_old_log_probs, axis=0)
-        combined_values = np.concatenate(combined_values, axis=0)
+        combined_states = pad_trials([data['states'] for data in replay_buffer])
+        combined_actions = pad_trials_1d([data['actions'] for data in replay_buffer])
+        combined_advantages = pad_trials_1d(all_advantages)
+        combined_old_log_probs = pad_trials_1d([data['log_probs'] for data in replay_buffer])
+        combined_values = pad_trials_1d([data['values'] for data in replay_buffer])
 
         combined_states_t = torch.FloatTensor(combined_states).to(device)
         combined_actions_t = torch.LongTensor(combined_actions).to(device)
@@ -318,7 +324,7 @@ def main(args=None):
         combined_old_log_probs_t = torch.FloatTensor(combined_old_log_probs).to(device)
         combined_values_t = torch.FloatTensor(combined_values).to(device)
 
-        policy_loss, value_loss = trpo_trainer.update_policy(
+        policy_loss, _ = trpo_trainer.update_policy(
             combined_states_t,
             combined_actions_t,
             combined_advantages_t,

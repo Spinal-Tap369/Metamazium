@@ -8,8 +8,8 @@ register(
     kwargs={
         "enable_render": True,
         "render_scale": 480,
-        "resolution": (40, 30),
-        "max_steps": 5000,
+        "resolution": (40, 60),
+        "max_steps": 500,
         "task_type": "ESCAPE",
         "phase_step_limit": 250,  # Define steps per phase
         "collision_penalty": -0.005  # Define collision penalty

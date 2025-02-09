@@ -11,9 +11,9 @@ from metamazium.env.maze_discrete_3d import MazeCoreDiscrete3D
 # Here, we interpret:
 #   - 0: turn left (i.e. (-1, 0))
 #   - 1: turn right (i.e. (1, 0))
-#   - 2: step backward (i.e. (0, -1))
 #   - 3: step forward (i.e. (0, 1))
-DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+# DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)] # only need 3 actions
+DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, 1)]
 
 class MetaMazeDiscrete3D(gym.Env):
     def __init__(self, 
@@ -37,7 +37,7 @@ class MetaMazeDiscrete3D(gym.Env):
             phase_step_limit=phase_step_limit,
             collision_penalty=collision_penalty
         )
-        self.action_space = gym.spaces.Discrete(4)
+        self.action_space = gym.spaces.Discrete(3)
         self.observation_space = gym.spaces.Box(
             low=0.0, 
             high=255.0, 

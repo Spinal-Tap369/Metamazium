@@ -19,7 +19,7 @@ import copy
 from metamazium.env.maze_task import MazeTaskManager  # Use TaskConfig for reconstruction
 
 # Discrete actions: Left, Right, Down, Up – used only for displaying instructions.
-DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+DISCRETE_ACTIONS = [(-1, 0), (1, 0), (0, 1)]
 
 def load_tasks(file_path):
     """Load tasks from a JSON file."""
@@ -37,7 +37,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Test Maze environment with keyboard control and randomized start/goal for unique tasks."
     )
-    parser.add_argument("--task_file", type=str, default="mazes_data_try/unique_mazes.json",
+    parser.add_argument("--task_file", type=str, default="mazes_data_try/train_tasks.json",
                         help="Path to the JSON file with unique task definitions")
     parser.add_argument("--max_steps", type=int, default=500,
                         help="Maximum steps to run each trial")
@@ -79,8 +79,6 @@ def run_trial(env, max_steps):
         elif keys[pygame.K_RIGHT]:
             action = 1
         elif keys[pygame.K_UP]:
-            action = 3
-        elif keys[pygame.K_DOWN]:
             action = 2
         else:
             # If no key is pressed, continue waiting.
@@ -168,9 +166,9 @@ def main(args=None):
 
     print(f"\nCompleted {total_trials} trials (2 tasks x 3 trials each).")
     # Optionally, save the trial results to a JSON file.
-    with open("mazes_data_try/test_trial_results.json", "w") as f:
-        json.dump(trial_results, f, indent=2)
-    print("Trial results saved to mazes_data_try/test_trial_results.json")
+    # with open("mazes_data_try/test_trial_results.json", "w") as f:
+    #     json.dump(trial_results, f, indent=2)
+    # print("Trial results saved to mazes_data_try/test_trial_results.json")
 
 if __name__ == "__main__":
     main()

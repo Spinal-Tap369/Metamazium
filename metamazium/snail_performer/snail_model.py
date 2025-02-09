@@ -1,5 +1,3 @@
-# metamazium/snail_performer/snail_model.py
-
 import math
 import torch
 import torch.nn as nn
@@ -7,6 +5,59 @@ import torch.nn.functional as F
 
 from metamazium.snail_performer.cnn_encoder import CNNEncoder
 from metamazium.performer.performer_pytorch import SelfAttention
+
+# ScalarEncoder module 
+class ScalarEncoder(nn.Module):
+    """
+    A simple MLP that encodes scalar inputs (last_action, last_reward, termination flag).
+    Input: Tensor of shape (B, 3)
+    Output: Tensor of shape (B, 64)
+    """
+    def __init__(self, in_dim=3, hidden_dim=32, out_dim=64):
+        super().__init__()
+        self.fc1 = nn.Linear(in_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, out_dim)
+        
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        return F.relu(self.fc2(x))
+
+# CombinedEncoder module       
+class CombinedEncoder(nn.Module):
+    """
+    Splits a 6-channel input into:
+      - A 3-channel image (first 3 channels), processed via a CNNEncoder.
+      - A 3-channel scalar part (last 3 channels), assumed to be constant over H, W.
+    It extracts the scalar values (by averaging spatially), encodes them via ScalarEncoder,
+    then concatenates the two embeddings and projects them back to a 256-dimensional vector.
+    """
+    def __init__(self, base_dim=256, scalar_out_dim=64):
+        super().__init__()
+        # Process only the image part (first 3 channels).
+        self.cnn_encoder = CNNEncoder(in_channels=3)
+        self.scalar_encoder = ScalarEncoder(in_dim=3, hidden_dim=32, out_dim=scalar_out_dim)
+        # Project concatenated embedding (256 + scalar_out_dim) to base_dim.
+        self.proj = nn.Linear(256 + scalar_out_dim, base_dim)
+        
+    def forward(self, obs):
+        """
+        Args:
+            obs (Tensor): shape (B, 6, H, W)
+        Returns:
+            Tensor: shape (B, base_dim)
+        """
+        # Split the channels.
+        image_part = obs[:, :3, :, :]   # shape: (B, 3, H, W)
+        scalar_part = obs[:, 3:, :, :]   # shape: (B, 3, H, W)
+        # Since the scalar channels are constant across spatial dimensions,
+        # take the mean over H and W.
+        scalar_vec = scalar_part.mean(dim=[2, 3])  # shape: (B, 3)
+        img_embed = self.cnn_encoder(image_part)     # shape: (B, 256)
+        scalar_embed = self.scalar_encoder(scalar_vec) # shape: (B, 64)
+        # Concatenate and project.
+        combined = torch.cat([img_embed, scalar_embed], dim=1)  # shape: (B, 256+64)
+        return F.relu(self.proj(combined))  # shape: (B, base_dim)
+
 
 class DenseBlock(nn.Module):
     def __init__(self, in_dim, dilation, filters):
@@ -86,7 +137,8 @@ class SNAILPolicyValueNet(nn.Module):
     ):
         super().__init__()
         self.action_dim = action_dim
-        self.cnn_encoder = CNNEncoder()
+        # Use the CombinedEncoder to process the 6-channel input:
+        self.combined_encoder = CombinedEncoder(base_dim=base_dim, scalar_out_dim=64)
         self.base_dim = base_dim
         self.seq_len = seq_len
 
@@ -114,21 +166,22 @@ class SNAILPolicyValueNet(nn.Module):
         self.value_out_dim = self.value_block2.out_dim
         self.value_head = nn.Conv1d(self.value_out_dim, 1, kernel_size=1)
 
-        # Expose dummy recurrent attributes required by TRPO_FO.
-        # For SNAIL (feedforward), set num_layers = 1 and choose hidden_size as base_dim.
+        # For TRPO_FO compatibility.
         self.num_layers = 1
         self.hidden_size = base_dim
 
     def forward(self, x):
         """
-        x: Tensor of shape (B, T, C, H, W) with C=6.
+        x: Tensor of shape (B, T, 6, H, W) with 6 channels (3 image, 3 scalar).
         Returns:
             policy_logits: (B, T, action_dim)
             values: (B, T)
         """
         B, T, C, H, W = x.shape
+        # Process each time-step independently:
         x2 = x.view(B * T, C, H, W)
-        feats = self.cnn_encoder(x2)  # (B*T, base_dim)
+        # Get the base embedding using our CombinedEncoder.
+        feats = self.combined_encoder(x2)  # (B*T, base_dim)
         feats_1D = feats.view(B, T, self.base_dim).permute(0, 2, 1).contiguous()  # (B, base_dim, T)
 
         # Policy branch.
@@ -171,4 +224,3 @@ class SNAILPolicyValueNet(nn.Module):
 
     def value_parameters(self):
         return list(self.parameters())
-

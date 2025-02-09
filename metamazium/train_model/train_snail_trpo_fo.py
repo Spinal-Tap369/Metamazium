@@ -14,7 +14,7 @@ torch.autograd.set_detect_anomaly(False)
 import metamazium.env
 from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
 from metamazium.snail_performer.trpo_fo import TRPO_FO
-from metamazium.env.maze_task import MazeTaskManager  # Use TaskConfig for reconstruction
+from metamazium.env.maze_task import MazeTaskManager  # for task reconstruction
 
 # Default hyperparameters
 DEFAULT_TOTAL_TIMESTEPS = 500000
@@ -124,7 +124,7 @@ def main(args=None):
 
     # Create environment.
     env = gym.make("MetaMazeDiscrete3D-v0", enable_render=False)
-    # Load the unique tasks (which include full maze layouts) from JSON.
+    # Load the tasks from JSON.
     tasks_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mazes_data", "train_tasks.json")
     with open(tasks_file, "r") as f:
         tasks_all = json.load(f)
@@ -142,7 +142,7 @@ def main(args=None):
 
     # Initialize SNAIL policy network and TRPO trainer.
     policy_net = SNAILPolicyValueNet(
-        action_dim=3,
+        action_dim=3,  
         base_dim=256,
         policy_filters=32,
         policy_attn_dim=16,
@@ -174,15 +174,14 @@ def main(args=None):
 
     pbar = tqdm(total=TOTAL_TIMESTEPS, initial=total_steps, desc="Training")
 
+    # For each trial, maintain a variable to track phase changes.
+    # update this at the start of each trial.
     while total_steps < TOTAL_TIMESTEPS:
         # Reconstruct the task configuration using the saved parameters.
         task_cfg = MazeTaskManager.TaskConfig(**trial_tasks[task_idx])
         env.unwrapped.set_task(task_cfg)
         task_idx = (task_idx + 1) % len(trial_tasks)
 
-        # Reset environment and (if applicable) RNN memory.
-        if hasattr(policy_net, "reset_memory"):
-            policy_net.reset_memory(batch_size=1, device=device)
         obs_raw, _ = env.reset()
 
         # Randomize start and goal for this trial.
@@ -196,7 +195,11 @@ def main(args=None):
         truncated = False
         last_action = 0.0
         last_reward = 0.0
-        boundary_bit = 1.0
+        # boundary_bit initialized to 0.
+        boundary_bit = 0.0
+
+        # Initialize previous phase as the current phase at trial start.
+        prev_phase = env.unwrapped.maze_core.phase
 
         trial_states = []    # List of (6, H, W) observations.
         trial_actions = []   # 1D arrays per trial.
@@ -204,8 +207,16 @@ def main(args=None):
         trial_values = []
         trial_log_probs = []
 
-        # Run one trial (episode).
+        # Run one trial (episode)
         while not done and not truncated and total_steps < TOTAL_TIMESTEPS:
+            # Check current phase and set boundary bit to 1 only if a phase transition from 1 to 2 occurs
+            current_phase = env.unwrapped.maze_core.phase
+            if prev_phase == 1 and current_phase == 2:
+                boundary_bit = 1.0
+            else:
+                boundary_bit = 0.0
+            prev_phase = current_phase
+
             obs_img = np.transpose(obs_raw, (2, 0, 1))  # (3, H, W)
             H, W = obs_img.shape[1], obs_img.shape[2]
             c3 = np.full((1, H, W), last_action, dtype=np.float32)
@@ -217,7 +228,7 @@ def main(args=None):
             with torch.no_grad():
                 obs_t = torch.from_numpy(obs_6ch[None, None]).float().to(device)
                 logits, val = policy_net.act_single_step(obs_t)
-                # Use the logits directly to sample an action.
+                # Use the logits directly to sample an action
                 dist = torch.distributions.Categorical(logits=logits)
                 action = dist.sample()
                 log_prob = dist.log_prob(action)
