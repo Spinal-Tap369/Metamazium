@@ -13,4 +13,4 @@ Training an agent to navigate a maze using Meta Reinforcement Learning technique
 ![Alt text for image](/others/mazium.png)
 
 
-NOTE - The original metamaze https://github.com/PaddlePaddle/MetaGym/tree/master/metagym/metamaze uses Gym which is no longer supported. I've adapted the discrete 3d maze for gymnasium and there have been some more changes to enable the agent to carry over memory across a trial.
+NOTE - The original metamaze https://github.com/PaddlePaddle/MetaGym/tree/master/metagym/metamaze uses Open AI's Gym which is no longer supported. I have adapted just the 3d discrete maze to use Gymnasium which is the continuation of Open AI Gyn.
