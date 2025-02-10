@@ -123,7 +123,7 @@ def main(args=None):
         tasks_all = json.load(f)
     print(f"Loaded {len(tasks_all)} tasks.")
 
-    # Sample 200 tasks and repeat each 5 times.
+    # Sample 200 tasks and repeat each 25 times.
     sampled_tasks = random.sample(tasks_all, 200)
     trial_tasks = []
     for task in sampled_tasks:
