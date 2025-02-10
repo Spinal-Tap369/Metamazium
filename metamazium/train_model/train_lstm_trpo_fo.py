@@ -22,7 +22,7 @@ from metamazium.env.maze_task import MazeTaskManager  # Use TaskConfig for recon
 DEFAULT_TOTAL_TIMESTEPS = 500000
 DEFAULT_STEPS_PER_UPDATE = 50000  
 DEFAULT_GAMMA = 0.99
-DEFAULT_GAE_LAMBDA = 0.95
+DEFAULT_GAE_LAMBDA = 0.99
 DEFAULT_MAX_KL_DIV = 0.01
 DEFAULT_VF_LR = 0.01
 DEFAULT_VF_ITERS = 5
@@ -134,7 +134,7 @@ def main(args=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Initialize the LSTM policy network and TRPO trainer.
-    policy_net = StackedLSTMPolicyValueNet(action_dim=3, hidden_size=512, num_layers=2).to(device)
+    policy_net = StackedLSTMPolicyValueNet(action_dim=3, hidden_size=256, num_layers=2).to(device)
     trpo_trainer = TRPO_FO(
         policy=policy_net,
         value_fun=policy_net,
