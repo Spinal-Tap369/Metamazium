@@ -127,7 +127,7 @@ def main(args=None):
     sampled_tasks = random.sample(tasks_all, 200)
     trial_tasks = []
     for task in sampled_tasks:
-        for _ in range(5):
+        for _ in range(50):
             trial_tasks.append(task)
     print(f"Using {len(trial_tasks)} trial tasks (200 tasks repeated 5 times).")
 
