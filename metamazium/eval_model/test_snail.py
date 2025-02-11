@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import json
 import random
-import pygame  # needed for saving trajectories, if desired
+import pygame  
 
 from metamazium.env.maze_task import MazeTaskManager
 from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
@@ -36,12 +36,9 @@ def main():
     num_unique = len(unique_tasks)
     print(f"Loaded {num_unique} unique test mazes from {test_tasks_file}")
 
-    # 2) For each unique maze, sample 5 trials.
-    trials = []
-    for task in unique_tasks:
-        for _ in range(5):
-            trials.append(task)
-    print(f"Total trials: {len(trials)} (each unique maze repeated 5 times)")
+    # 2) Use unique mazes directly so that you have 144 trials (not 720).
+    trials = unique_tasks  
+    print(f"Total trials: {len(trials)} (each unique maze used once)")
 
     # 3) Load environment.
     env_id = "MetaMazeDiscrete3D-v0"
@@ -68,7 +65,7 @@ def main():
     selected_runs = []  # Each element: (trial_index, run_index, phase1_steps, phase2_steps, phase_change_idx)
 
     trial_idx = 0
-    # For each trial (each maze repeated 5 times)
+    # For each trial (each unique maze once)
     for idx, task_params in enumerate(trials):
         trial_idx += 1
         print(f"\nTrial {trial_idx}/{len(trials)}")
@@ -88,7 +85,7 @@ def main():
             done = False
             truncated = False
 
-            # For SNAIL input (if needed)
+            # For SNAIL input.
             ep_obs_seq = []
             last_action = 0.0
             last_reward = 0.0
@@ -108,7 +105,7 @@ def main():
                 obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)
                 ep_obs_seq.append(obs_6ch)
                 t_len = len(ep_obs_seq)
-                obs_seq_np = np.stack(ep_obs_seq, axis=0)[None]
+                obs_seq_np = np.stack(ep_obs_seq, axis=0)[None]  # shape: (1, t_len, 6, H, W)
                 obs_seq_torch = torch.from_numpy(obs_seq_np).float().to(device)
 
                 with torch.no_grad():
@@ -127,7 +124,7 @@ def main():
                 else:
                     phase2_steps += 1
 
-                # Record the phase change index (first time phase becomes 2)
+                # Record the phase change index (first time phase becomes 2).
                 current_phase = env.unwrapped.maze_core.phase
                 if phase_change_idx is None and current_phase == 2:
                     phase_change_idx = len(ep_obs_seq)
@@ -144,9 +141,6 @@ def main():
             else:
                 print("    Run not selected.")
 
-        # End trial loop (if needed, you can add a break or continue)
-
-    # Report overall selected runs.
     if selected_runs:
         all_phase1 = [r[2] for r in selected_runs]
         all_phase2 = [r[3] for r in selected_runs]
