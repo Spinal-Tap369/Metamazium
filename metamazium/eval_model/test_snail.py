@@ -1,11 +1,9 @@
-# test_snail.py
-
 import gymnasium as gym
 import numpy as np
 import torch
 import json
 import random
-import pygame  # needed for saving trajectories
+import pygame  # needed for saving trajectories, if desired
 
 from metamazium.env.maze_task import MazeTaskManager
 from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
@@ -16,13 +14,11 @@ def save_trajectory_from_list(traj, file_name, maze_core):
     Save a trajectory image from a list of grid positions.
     This function uses the render parameters of maze_core.
     """
-    # Ensure render parameters are set.
     maze_core.render_init(480)  # use 480 as view size (adjust as needed)
     view_size = maze_core._view_size
     render_cell_size = maze_core._render_cell_size
     traj_screen = pygame.Surface((view_size, view_size))
     traj_screen.fill(pygame.Color("white"))
-    # Draw trajectory lines.
     for i in range(len(traj) - 1):
         p = traj[i]
         n = traj[i + 1]
@@ -53,7 +49,6 @@ def main():
 
     # 4) Load the trained SNAIL model.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     snail_model = SNAILPolicyValueNet(
         action_dim=3,  
         base_dim=256,
@@ -63,48 +58,43 @@ def main():
         seq_len=500,
         num_policy_attn=2
     ).to(device)
-
     model_path = "/content/snail_final_model.pth"
     ckpt = torch.load(model_path, map_location=device)
     snail_model.load_state_dict(ckpt)
     snail_model.eval()
     print(f"Loaded model from {model_path}")
 
-    # Lists to store selected trial details.
-    selected_trials = []  # Each element: (trial_index, avg_phase1, avg_phase2)
+    # List to store details of selected runs (each run individually).
+    selected_runs = []  # Each element: (trial_index, run_index, phase1_steps, phase2_steps, phase_change_idx)
 
-    # For each trial (each maze repeated 5 times)
     trial_idx = 0
+    # For each trial (each maze repeated 5 times)
     for idx, task_params in enumerate(trials):
         trial_idx += 1
         print(f"\nTrial {trial_idx}/{len(trials)}")
-        # 5) Set up the maze for the given trial.
         task_config = MazeTaskManager.TaskConfig(**task_params)
         env.unwrapped.set_task(task_config)
 
         # For this trial, run 5 independent runs.
-        run_phase1_steps = []
-        run_phase2_steps = []
-        phase_change_indices = []  # to store the index when phase transition occurs per run
-
         for run in range(5):
+            print(f"  Run {run+1}:")
             obs_raw, _ = env.reset()
-            # Randomize start and goal.
             env.unwrapped.maze_core.randomize_start()
             try:
                 env.unwrapped.maze_core.randomize_goal(min_distance=3.0)
             except Exception as e:
-                print(f"Warning (run {run+1}): randomize_goal failed: {e}. Using current goal.")
+                print(f"    Warning: randomize_goal failed: {e}. Using current goal.")
 
             done = False
             truncated = False
 
-            ep_obs_seq = []  # to build the input sequence (if needed for the model)
+            # For SNAIL input (if needed)
+            ep_obs_seq = []
             last_action = 0.0
             last_reward = 0.0
             boundary_bit = 1.0
             phase_boundary_signaled = False
-            phase_change_idx = None  # record when phase changes
+            phase_change_idx = None
 
             phase1_steps = 0
             phase2_steps = 0
@@ -115,11 +105,10 @@ def main():
                 c3 = np.full((1, H, W), last_action, dtype=np.float32)
                 c4 = np.full((1, H, W), last_reward, dtype=np.float32)
                 c5 = np.full((1, H, W), boundary_bit, dtype=np.float32)
-                obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)  # (6, H, W)
-
+                obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)
                 ep_obs_seq.append(obs_6ch)
                 t_len = len(ep_obs_seq)
-                obs_seq_np = np.stack(ep_obs_seq, axis=0)[None]  # shape: (1, t_len, 6, H, W)
+                obs_seq_np = np.stack(ep_obs_seq, axis=0)[None]
                 obs_seq_torch = torch.from_numpy(obs_seq_np).float().to(device)
 
                 with torch.no_grad():
@@ -133,68 +122,42 @@ def main():
                 last_action = float(action.item())
                 last_reward = float(reward)
 
-                # Update phase counts.
                 if info["phase"] == 1:
                     phase1_steps += 1
                 else:
                     phase2_steps += 1
 
-                # Record phase change index (only first occurrence)
+                # Record the phase change index (first time phase becomes 2)
                 current_phase = env.unwrapped.maze_core.phase
                 if phase_change_idx is None and current_phase == 2:
                     phase_change_idx = len(ep_obs_seq)
-                # Set boundary flag.
                 if current_phase == 2 and not phase_boundary_signaled:
                     boundary_bit = 1.0
                     phase_boundary_signaled = True
                 else:
                     boundary_bit = 0.0
 
-            run_phase1_steps.append(phase1_steps)
-            run_phase2_steps.append(phase2_steps)
-            phase_change_indices.append(phase_change_idx)
-            print(f"  Run {run+1}: Phase1 steps = {phase1_steps}, Phase2 steps = {phase2_steps}, Phase change index = {phase_change_idx}")
+            print(f"    Phase1 steps = {phase1_steps}, Phase2 steps = {phase2_steps}, Phase change index = {phase_change_idx}")
+            if phase2_steps < phase1_steps:
+                selected_runs.append((trial_idx, run+1, phase1_steps, phase2_steps, phase_change_idx))
+                print("    Run selected.")
+            else:
+                print("    Run not selected.")
 
-        # Compute average steps over the 5 runs.
-        avg_phase1 = np.mean(run_phase1_steps)
-        avg_phase2 = np.mean(run_phase2_steps)
-        print(f"Trial {trial_idx}: Avg Phase1 steps = {avg_phase1:.2f}, Avg Phase2 steps = {avg_phase2:.2f}")
+        # End trial loop (if needed, you can add a break or continue)
 
-        # Select trial if average Phase2 steps are lower than average Phase1 steps.
-        if avg_phase2 < avg_phase1:
-            selected_trials.append((trial_idx, avg_phase1, avg_phase2, phase_change_indices))
-    
-    # After testing all trials, compute overall averages among selected trials.
-    if selected_trials:
-        sel_phase1_avg = np.mean([trial[1] for trial in selected_trials])
-        sel_phase2_avg = np.mean([trial[2] for trial in selected_trials])
-        print("\n==== Selected Trials (Avg Phase2 steps < Avg Phase1 steps) ====")
-        for trial in selected_trials:
-            print(f"Trial {trial[0]}: Avg Phase1 = {trial[1]:.2f}, Avg Phase2 = {trial[2]:.2f}")
-        print("==== Final Averages for Selected Trials ====")
-        print(f"Average Phase1 steps: {sel_phase1_avg:.2f}")
-        print(f"Average Phase2 steps: {sel_phase2_avg:.2f}")
-
-        # For each selected trial, save trajectories for both phases.
-        # Here, we assume that the maze_core stores the full trajectory in _agent_trajectory.
-        # We'll split this trajectory using the phase change index from the first run of that trial.
-        # (For simplicity, using the phase change index from the first run.)
-        for trial in selected_trials:
-            trial_index, _, _, phase_change_indices = trial
-            # Use the first non-None phase change index from the 5 runs.
-            phase_change_idx = next((idx for idx in phase_change_indices if idx is not None), None)
-            if phase_change_idx is None:
-                print(f"Trial {trial_index}: No phase change detected; skipping trajectory saving.")
-                continue
-            full_traj = env.unwrapped.maze_core._agent_trajectory  # list of grid positions
-            # Split the trajectory.
-            phase1_traj = full_traj[:phase_change_idx]
-            phase2_traj = full_traj[phase_change_idx:]
-            # Save the trajectories.
-            save_trajectory_from_list(phase1_traj, f"trial_{trial_index}_phase1.png", env.unwrapped.maze_core)
-            save_trajectory_from_list(phase2_traj, f"trial_{trial_index}_phase2.png", env.unwrapped.maze_core)
+    # Report overall selected runs.
+    if selected_runs:
+        all_phase1 = [r[2] for r in selected_runs]
+        all_phase2 = [r[3] for r in selected_runs]
+        print("\n==== Selected Runs (Phase2 steps < Phase1 steps) ====")
+        for r in selected_runs:
+            print(f"Trial {r[0]} Run {r[1]}: Phase1 steps = {r[2]}, Phase2 steps = {r[3]}, Phase change index = {r[4]}")
+        print("==== Final Averages for Selected Runs ====")
+        print(f"Average Phase1 steps: {np.mean(all_phase1):.2f}")
+        print(f"Average Phase2 steps: {np.mean(all_phase2):.2f}")
     else:
-        print("No trials met the condition: Avg Phase2 steps < Avg Phase1 steps.")
+        print("No runs met the condition: Phase2 steps < Phase1 steps.")
 
     env.close()
 
