@@ -34,7 +34,7 @@ def save_trajectory_from_list(traj, file_name, maze_core):
 
 def main():
     # 1) Load 100 unique mazes.
-    test_tasks_file = "metamazium/mazes_data/test_tasks_small.json"
+    test_tasks_file = "content/test_tasks_small.json"
     with open(test_tasks_file, "r") as f:
         unique_tasks = json.load(f)
     num_unique = len(unique_tasks)
