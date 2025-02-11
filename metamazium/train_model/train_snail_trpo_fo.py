@@ -75,11 +75,6 @@ def load_checkpoint(policy_net, load_dir, checkpoint_file=None):
         return 0, 0, 0
 
 def pad_trials(trial_list, pad_value=0.0):
-    """
-    Pads a list of image trajectories so that each trial (shape: (L, 6, H, W))
-    becomes shape (T, 6, H, W), where T is the maximum length.
-    Returns a numpy array of shape (N, T, 6, H, W)
-    """
     if not trial_list:
         return np.array([])
     max_T = max(trial.shape[0] for trial in trial_list)
@@ -95,10 +90,6 @@ def pad_trials(trial_list, pad_value=0.0):
     return np.stack(padded_trials, axis=0)
 
 def pad_trials_1d(trial_list, pad_value=0):
-    """
-    Pads a list of 1D arrays (e.g. actions) so that each trial has the same length.
-    Returns a numpy array of shape (N, T)
-    """
     if not trial_list:
         return np.array([])
     max_T = max(trial.shape[0] for trial in trial_list)
@@ -135,9 +126,9 @@ def main(args=None):
     sampled_tasks = random.sample(tasks_all, 200)
     trial_tasks = []
     for task in sampled_tasks:
-        for _ in range(50):
+        for _ in range(5):
             trial_tasks.append(task)
-    print(f"Using {len(trial_tasks)} trial tasks (each of 200 tasks repeated 50 times).")
+    print(f"Using {len(trial_tasks)} trial tasks (each of 200 tasks repeated 5 times).")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -178,14 +169,13 @@ def main(args=None):
 
     # Main training loop.
     while total_steps < TOTAL_TIMESTEPS:
-        # Reconstruct task configuration using the saved parameters.
         task_cfg = MazeTaskManager.TaskConfig(**trial_tasks[task_idx])
         env.unwrapped.set_task(task_cfg)
         task_idx = (task_idx + 1) % len(trial_tasks)
 
         obs_raw, _ = env.reset()
 
-        # Randomize start and goal for this trial.
+        # Randomize start and goal.
         env.unwrapped.maze_core.randomize_start()
         try:
             env.unwrapped.maze_core.randomize_goal(min_distance=3.0)
@@ -196,26 +186,23 @@ def main(args=None):
         truncated = False
         last_action = 0.0
         last_reward = 0.0
-        boundary_bit = 0.0  # Initialize boundary bit to 0.
+        boundary_bit = 0.0
 
-        prev_phase = env.unwrapped.maze_core.phase  # Get initial phase.
+        prev_phase = env.unwrapped.maze_core.phase
 
-        trial_states = []    # List of (6, H, W) observations.
-        trial_actions = []   # 1D array of actions.
+        trial_states = []
+        trial_actions = []
         trial_rewards = []
         trial_values = []
         trial_log_probs = []
 
-        # --- Initialize phase metrics for this trial ---
+        # Initialize phase metrics for this trial.
         phase1_steps = 0
         phase2_steps = 0
         phase1_reward = 0.0
         phase2_reward = 0.0
-        # -----------------------------------------------------
 
-        # Run one trial (episode).
         while not done and not truncated and total_steps < TOTAL_TIMESTEPS:
-            # Check current phase; if transitioning from phase 1 to phase 2, set boundary_bit to 1.
             current_phase = env.unwrapped.maze_core.phase
             if prev_phase == 1 and current_phase == 2:
                 boundary_bit = 1.0
@@ -223,7 +210,7 @@ def main(args=None):
                 boundary_bit = 0.0
             prev_phase = current_phase
 
-            obs_img = np.transpose(obs_raw, (2, 0, 1))  # (3, H, W)
+            obs_img = np.transpose(obs_raw, (2, 0, 1))
             H, W = obs_img.shape[1], obs_img.shape[2]
             c3 = np.full((1, H, W), last_action, dtype=np.float32)
             c4 = np.full((1, H, W), last_reward, dtype=np.float32)
@@ -234,7 +221,6 @@ def main(args=None):
             with torch.no_grad():
                 obs_t = torch.from_numpy(obs_6ch[None, None]).float().to(device)
                 logits, val = policy_net.act_single_step(obs_t)
-                # Use the logits to sample an action.
                 dist = torch.distributions.Categorical(logits=logits)
                 action = dist.sample()
                 log_prob = dist.log_prob(action)
@@ -246,7 +232,6 @@ def main(args=None):
             trial_log_probs.append(log_prob.item())
             trial_rewards.append(reward)
 
-            # Update phase metrics based on current phase 
             if info["phase"] == 1:
                 phase1_steps += 1
                 phase1_reward += reward
@@ -261,14 +246,12 @@ def main(args=None):
             last_reward = float(reward)
             obs_raw = obs_next
 
-        # End of trial: convert trial data to numpy arrays.
         trial_states_np = np.array(trial_states, dtype=np.float32)
         trial_actions_np = np.array(trial_actions, dtype=np.int64)
         trial_rewards_np = np.array(trial_rewards, dtype=np.float32)
         trial_values_np = np.array(trial_values, dtype=np.float32)
         trial_log_probs_np = np.array(trial_log_probs, dtype=np.float32)
 
-        # Store trial data along with phase metrics in the replay buffer.
         replay_buffer.append({
             'states': trial_states_np,
             'actions': trial_actions_np,
@@ -284,7 +267,6 @@ def main(args=None):
         torch.cuda.empty_cache()
 
         if steps_since_update >= STEPS_PER_UPDATE:
-            # Prepare rollouts and compute advantages.
             rollouts = []
             for data in replay_buffer:
                 rollouts.append({
@@ -314,7 +296,6 @@ def main(args=None):
             combined_old_log_probs = np.concatenate(combined_old_log_probs, axis=0)
             combined_values = np.concatenate(combined_values, axis=0)
 
-            # Aggregate phase metrics over the batch.
             total_phase1_steps = 0
             total_phase2_steps = 0
             total_phase1_reward = 0.0
@@ -357,7 +338,8 @@ def main(args=None):
             steps_since_update = 0
             torch.cuda.empty_cache()
 
-    if steps_since_update >= STEPS_PER_UPDATE:
+    # Final update: if remaining batch has at least 35K timesteps, update and save model.
+    if steps_since_update >= 35:
         rollouts = []
         for data in replay_buffer:
             rollouts.append({
@@ -398,6 +380,10 @@ def main(args=None):
 
     pbar.close()
     env.close()
+    # Final save: save the clean state_dict.
+    final_model_path = os.path.join(CHECKPOINT_DIR, "final_model.pth")
+    torch.save(policy_net.state_dict(), final_model_path)
+    print(f"Final model saved in loadable format to {final_model_path}")
     save_checkpoint(policy_net, total_steps, CHECKPOINT_DIR, batch_update_count, LOAD_DIR, task_idx)
     print(f"Training completed. Total steps: {total_steps}")
 

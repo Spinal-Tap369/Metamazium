@@ -26,7 +26,6 @@ DEFAULT_GAE_LAMBDA = 0.99
 DEFAULT_MAX_KL_DIV = 0.01
 DEFAULT_VF_LR = 0.01
 DEFAULT_VF_ITERS = 5
-DEFAULT_ENTROPY_COEF = 0.01
 DEFAULT_CHECKPOINT_DIR = "checkpoint_trpo_fo"
 DEFAULT_CHECKPOINT_LOAD_DIR = "checkpoint_trpo_fo_load"
 DEFAULT_CHECKPOINT_FILE = None
@@ -55,14 +54,14 @@ def save_checkpoint(policy_net, total_steps, checkpoint_dir, batch_count, load_d
         "policy_state_dict": policy_net.state_dict(),
         "total_steps": total_steps,
         "batch_count": batch_count,
-        "task_idx": task_idx  # Save the current trial index
+        "task_idx": task_idx  # Save the current trial index.
     }
     torch.save(checkpoint, checkpoint_file)
     torch.save(checkpoint, chkload_file)
     print(f"Checkpoint saved at step {total_steps} as {filename} (also updated chkload.pth in load dir)")
 
 def load_checkpoint(policy_net, load_dir, checkpoint_file=None):
-    if checkpoint_file is None or checkpoint_file == "":
+    if not checkpoint_file:
         checkpoint_file = os.path.join(load_dir, "chkload.pth")
     if os.path.isfile(checkpoint_file):
         print(f"Loading checkpoint: {checkpoint_file}")
@@ -70,7 +69,7 @@ def load_checkpoint(policy_net, load_dir, checkpoint_file=None):
         policy_net.load_state_dict(ckpt["policy_state_dict"])
         total_steps = ckpt.get("total_steps", 0)
         batch_count = ckpt.get("batch_count", 0)
-        task_idx = ckpt.get("task_idx", 0)  # Retrieve saved trial index
+        task_idx = ckpt.get("task_idx", 0)  # Retrieve the saved trial index.
         print(f"Resumed training from step {total_steps}, batch count {batch_count}, starting at trial index {task_idx}")
         return total_steps, batch_count, task_idx
     else:
@@ -123,19 +122,19 @@ def main(args=None):
     tasks_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mazes_data", "train_tasks.json")
     with open(tasks_file, "r") as f:
         tasks_all = json.load(f)
-    print(f"Loaded {len(tasks_all)} tasks.")
+    print(f"Loaded {len(tasks_all)} unique tasks.")
 
-    # Sample 200 tasks and repeat each 50 times.
+    # From the available tasks sample 200 tasks evenly.
     sampled_tasks = random.sample(tasks_all, 200)
     trial_tasks = []
     for task in sampled_tasks:
-        for _ in range(50):
+        for _ in range(5):
             trial_tasks.append(task)
-    print(f"Using {len(trial_tasks)} trial tasks (200 tasks repeated 50 times).")
+    print(f"Using {len(trial_tasks)} trial tasks (200 tasks repeated 5 times).")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Initialize the LSTM policy network and TRPO trainer.
+    # Initialize LSTM policy network and TRPO trainer.
     policy_net = StackedLSTMPolicyValueNet(action_dim=3, hidden_size=256, num_layers=2).to(device)
     trpo_trainer = TRPO_FO(
         policy=policy_net,
@@ -154,14 +153,13 @@ def main(args=None):
     task_idx = 0
     replay_buffer = []
 
-    # Load checkpoint (including saved trial index)
+    # Load checkpoint (including saved trial index).
     total_steps, batch_update_count, task_idx = load_checkpoint(policy_net, LOAD_DIR, CHECKPOINT_FILE)
 
     pbar = tqdm(total=TOTAL_TIMESTEPS, initial=total_steps, desc="Training")
 
     # Main training loop.
     while total_steps < TOTAL_TIMESTEPS:
-        # Set the task for this trial using the current trial index.
         task_cfg = MazeTaskManager.TaskConfig(**trial_tasks[task_idx])
         env.unwrapped.set_task(task_cfg)
         task_idx = (task_idx + 1) % len(trial_tasks)
@@ -181,25 +179,23 @@ def main(args=None):
         truncated = False
         last_action = 0.0
         last_reward = 0.0
-        boundary_bit = 0.0  # Initialize boundary bit to 0.
+        boundary_bit = 0.0
 
-        prev_phase = env.unwrapped.maze_core.phase  # Get initial phase.
+        prev_phase = env.unwrapped.maze_core.phase
 
-        trial_states = []    # List of (6, H, W) observations.
-        trial_actions = []   # 1D array of actions.
+        trial_states = []
+        trial_actions = []
         trial_rewards = []
         trial_values = []
         trial_log_probs = []
 
-        # Initialize phase metrics for this trial 
+        # Initialize phase metrics.
         phase1_steps = 0
         phase2_steps = 0
         phase1_reward = 0.0
         phase2_reward = 0.0
-    
 
         while not done and not truncated and total_steps < TOTAL_TIMESTEPS:
-            # Check phase; if transitioning from phase 1 to phase 2, set boundary_bit to 1.
             current_phase = env.unwrapped.maze_core.phase
             if prev_phase == 1 and current_phase == 2:
                 boundary_bit = 1.0
@@ -207,7 +203,7 @@ def main(args=None):
                 boundary_bit = 0.0
             prev_phase = current_phase
 
-            obs_img = np.transpose(obs_raw, (2, 0, 1))  # (3, H, W)
+            obs_img = np.transpose(obs_raw, (2, 0, 1))
             H, W = obs_img.shape[1], obs_img.shape[2]
             c3 = np.full((1, H, W), last_action, dtype=np.float32)
             c4 = np.full((1, H, W), last_reward, dtype=np.float32)
@@ -229,14 +225,12 @@ def main(args=None):
             trial_log_probs.append(log_prob.item())
             trial_rewards.append(reward)
 
-            # Update phase metrics based on current phase 
             if info["phase"] == 1:
                 phase1_steps += 1
                 phase1_reward += reward
             else:
                 phase2_steps += 1
                 phase2_reward += reward
-
 
             total_steps += 1
             steps_since_update += 1
@@ -245,14 +239,12 @@ def main(args=None):
             last_reward = float(reward)
             obs_raw = obs_next
 
-        # End of trial: convert trial data to numpy arrays.
         trial_states_np = np.array(trial_states, dtype=np.float32)
         trial_actions_np = np.array(trial_actions, dtype=np.int64)
         trial_rewards_np = np.array(trial_rewards, dtype=np.float32)
         trial_values_np = np.array(trial_values, dtype=np.float32)
         trial_log_probs_np = np.array(trial_log_probs, dtype=np.float32)
 
-        # Save trial data along with phase metrics in the replay buffer.
         replay_buffer.append({
             'states': trial_states_np,
             'actions': trial_actions_np,
@@ -268,7 +260,6 @@ def main(args=None):
         torch.cuda.empty_cache()
 
         if steps_since_update >= STEPS_PER_UPDATE:
-            # Prepare rollouts and compute advantages.
             rollouts = []
             for data in replay_buffer:
                 rollouts.append({
@@ -298,7 +289,6 @@ def main(args=None):
             combined_old_log_probs = np.concatenate(combined_old_log_probs, axis=0)
             combined_values = np.concatenate(combined_values, axis=0)
 
-            # Aggregate phase metrics over the batch.
             total_phase1_steps = 0
             total_phase2_steps = 0
             total_phase1_reward = 0.0
@@ -330,7 +320,6 @@ def main(args=None):
                 combined_states_t,
                 combined_values_t
             )
-
             print(f"[TRPO UPDATE] Steps: {total_steps}, KL: {trpo_trainer.current_kl:.4f}, "
                   f"Policy Loss: {policy_loss:.4f}, Value Loss: {final_vloss:.4f}, "
                   f"Avg Phase1 Steps: {avg_phase1_steps:.2f}, Avg Phase2 Steps: {avg_phase2_steps:.2f}, "
@@ -342,7 +331,8 @@ def main(args=None):
             steps_since_update = 0
             torch.cuda.empty_cache()
 
-    if steps_since_update >= STEPS_PER_UPDATE:
+    # Final update: if remaining batch has at least 35K timesteps, update and save model.
+    if steps_since_update >= 35000:
         rollouts = []
         for data in replay_buffer:
             rollouts.append({
@@ -357,22 +347,6 @@ def main(args=None):
         combined_advantages = pad_trials_1d(all_advantages)
         combined_old_log_probs = pad_trials_1d([data['log_probs'] for data in replay_buffer])
         combined_values = pad_trials_1d([data['values'] for data in replay_buffer])
-
-        # Aggregate phase metrics for the final update.
-        total_phase1_steps = 0
-        total_phase2_steps = 0
-        total_phase1_reward = 0.0
-        total_phase2_reward = 0.0
-        num_trials = len(replay_buffer)
-        for data in replay_buffer:
-            total_phase1_steps += data.get('phase1_steps', 0)
-            total_phase2_steps += data.get('phase2_steps', 0)
-            total_phase1_reward += data.get('phase1_reward', 0.0)
-            total_phase2_reward += data.get('phase2_reward', 0.0)
-        avg_phase1_steps = total_phase1_steps / num_trials if num_trials > 0 else 0
-        avg_phase2_steps = total_phase2_steps / num_trials if num_trials > 0 else 0
-        avg_phase1_reward = total_phase1_reward / num_trials if num_trials > 0 else 0.0
-        avg_phase2_reward = total_phase2_reward / num_trials if num_trials > 0 else 0.0
 
         combined_states_t = torch.FloatTensor(combined_states).to(device)
         combined_actions_t = torch.LongTensor(combined_actions).to(device)
@@ -399,6 +373,10 @@ def main(args=None):
 
     pbar.close()
     env.close()
+    # Final save: save the clean state_dict.
+    final_model_path = os.path.join(CHECKPOINT_DIR, "final_model.pth")
+    torch.save(policy_net.state_dict(), final_model_path)
+    print(f"Final model saved in loadable format to {final_model_path}")
     save_checkpoint(policy_net, total_steps, CHECKPOINT_DIR, batch_update_count, LOAD_DIR, task_idx)
     print(f"Training completed. Total steps: {total_steps}")
 
