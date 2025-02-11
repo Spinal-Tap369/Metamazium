@@ -34,7 +34,7 @@ def save_trajectory_from_list(traj, file_name, maze_core):
 
 def main():
     # 1) Load 100 unique mazes.
-    test_tasks_file = "content/test_tasks_small.json"
+    test_tasks_file = "/content/test_tasks_small.json"
     with open(test_tasks_file, "r") as f:
         unique_tasks = json.load(f)
     num_unique = len(unique_tasks)
@@ -64,7 +64,7 @@ def main():
         num_policy_attn=2
     ).to(device)
 
-    model_path = "content/snail_final_model.pth"
+    model_path = "/content/snail_final_model.pth"
     ckpt = torch.load(model_path, map_location=device)
     snail_model.load_state_dict(ckpt)
     snail_model.eval()
