@@ -7,7 +7,7 @@ import json
 import random
 import pygame  # needed for saving trajectories
 
-from metamazium.env.maze_task import MazeTaskSampler
+from metamazium.env.maze_task import MazeTaskManager
 from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
 import metamazium.env  
 
@@ -53,18 +53,20 @@ def main():
 
     # 4) Load the trained SNAIL model.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     snail_model = SNAILPolicyValueNet(
-        action_dim=4,  # adjust if needed
+        action_dim=3,  
         base_dim=256,
         policy_filters=32,
         policy_attn_dim=16,
         value_filters=16,
-        seq_len=800,  # must match or exceed max steps used in training
+        seq_len=500,
         num_policy_attn=2
     ).to(device)
-    model_path = "models/snail_chkload95.pth"
+
+    model_path = "content/snail_final_model.pth"
     ckpt = torch.load(model_path, map_location=device)
-    snail_model.load_state_dict(ckpt["policy_state_dict"])
+    snail_model.load_state_dict(ckpt)
     snail_model.eval()
     print(f"Loaded model from {model_path}")
 
@@ -77,7 +79,7 @@ def main():
         trial_idx += 1
         print(f"\nTrial {trial_idx}/{len(trials)}")
         # 5) Set up the maze for the given trial.
-        task_config = MazeTaskSampler(**task_params)
+        task_config = MazeTaskManager.TaskConfig(**task_params)
         env.unwrapped.set_task(task_config)
 
         # For this trial, run 5 independent runs.
