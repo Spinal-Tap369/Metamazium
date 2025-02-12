@@ -36,7 +36,7 @@ def main():
     num_unique = len(unique_tasks)
     print(f"Loaded {num_unique} unique test mazes from {test_tasks_file}")
 
-    # 2) Use unique mazes directly as trials.
+    # 2) Use unique mazes directly so that you have 144 trials (not 720).
     trials = unique_tasks  
     print(f"Total trials: {len(trials)} (each unique maze used once)")
 
@@ -61,23 +61,22 @@ def main():
     lstm_model.eval()
     print(f"Loaded model from {checkpoint_path}")
 
-    # List to store details of selected runs (each run individually).
+    # List to store details of selected runs.
     # Each element: (trial_index, run_index, phase1_steps, phase2_steps, phase_change_idx)
     selected_runs = []
 
     trial_idx = 0
-    # For each trial (each unique maze)
+    # For each trial (each unique maze once)
     for idx, task_params in enumerate(trials):
         trial_idx += 1
         print(f"\nTrial {trial_idx}/{len(trials)}")
-        # Use TaskConfig to build the task.
         task_config = MazeTaskManager.TaskConfig(**task_params)
         env.unwrapped.set_task(task_config)
 
         # For this trial, run 5 independent runs.
         for run in range(5):
             print(f"  Run {run+1}:")
-            # Reset environment and LSTM memory for each run.
+            # Reset LSTM memory before each run.
             lstm_model.reset_memory(batch_size=1, device=device)
             obs_raw, _ = env.reset()
             env.unwrapped.maze_core.randomize_start()
@@ -89,7 +88,7 @@ def main():
             done = False
             truncated = False
 
-            ep_obs_seq = []  # Build input sequence.
+            ep_obs_seq = []
             last_action = 0.0
             last_reward = 0.0
             boundary_bit = 1.0
@@ -108,7 +107,7 @@ def main():
                 obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)
                 ep_obs_seq.append(obs_6ch)
                 t_len = len(ep_obs_seq)
-                obs_seq_np = np.stack(ep_obs_seq, axis=0)[None]  # Shape: (1, t_len, 6, H, W)
+                obs_seq_np = np.stack(ep_obs_seq, axis=0)[None]  # shape: (1, t_len, 6, H, W)
                 obs_seq_torch = torch.from_numpy(obs_seq_np).float().to(device)
 
                 with torch.no_grad():
@@ -128,7 +127,7 @@ def main():
                     elif current_phase == 2:
                         phase2_steps += 1
 
-                # Record the phase change index (first time phase becomes 2).
+                # Record phase change index (first time phase becomes 2)
                 current_phase = env.unwrapped.maze_core.phase
                 if phase_change_idx is None and current_phase == 2:
                     phase_change_idx = len(ep_obs_seq)
@@ -142,6 +141,16 @@ def main():
             if phase2_steps < phase1_steps:
                 selected_runs.append((trial_idx, run+1, phase1_steps, phase2_steps, phase_change_idx))
                 print("    Run selected.")
+                # As soon as a run is selected, save its trajectory.
+                full_traj = env.unwrapped.maze_core._agent_trajectory  # list of grid positions
+                if full_traj and len(full_traj) > 0:
+                    if phase_change_idx is not None:
+                        phase1_traj = full_traj[:phase_change_idx]
+                        phase2_traj = full_traj[phase_change_idx:]
+                        save_trajectory_from_list(phase1_traj, f"/content/trial_{trial_idx}_run_{run+1}_phase1.png", env.unwrapped.maze_core)
+                        save_trajectory_from_list(phase2_traj, f"/content/trial_{trial_idx}_run_{run+1}_phase2.png", env.unwrapped.maze_core)
+                    else:
+                        save_trajectory_from_list(full_traj, f"/content/trial_{trial_idx}_run_{run+1}_full.png", env.unwrapped.maze_core)
             else:
                 print("    Run not selected.")
 

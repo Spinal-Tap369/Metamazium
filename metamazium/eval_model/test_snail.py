@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import json
 import random
-import pygame  
+import pygame  # needed for saving trajectories, if desired
 
 from metamazium.env.maze_task import MazeTaskManager
 from metamazium.snail_performer.snail_model import SNAILPolicyValueNet
@@ -85,7 +85,6 @@ def main():
             done = False
             truncated = False
 
-            # For SNAIL input.
             ep_obs_seq = []
             last_action = 0.0
             last_reward = 0.0
@@ -138,6 +137,17 @@ def main():
             if phase2_steps < phase1_steps:
                 selected_runs.append((trial_idx, run+1, phase1_steps, phase2_steps, phase_change_idx))
                 print("    Run selected.")
+
+                # Immediately save trajectory for this run.
+                full_traj = env.unwrapped.maze_core._agent_trajectory  # list of grid positions
+                if full_traj and len(full_traj) > 0:
+                    if phase_change_idx is not None:
+                        phase1_traj = full_traj[:phase_change_idx]
+                        phase2_traj = full_traj[phase_change_idx:]
+                        save_trajectory_from_list(phase1_traj, f"/content/trial_{trial_idx}_run_{run+1}_phase1.png", env.unwrapped.maze_core)
+                        save_trajectory_from_list(phase2_traj, f"/content/trial_{trial_idx}_run_{run+1}_phase2.png", env.unwrapped.maze_core)
+                    else:
+                        save_trajectory_from_list(full_traj, f"/content/trial_{trial_idx}_run_{run+1}_full.png", env.unwrapped.maze_core)
             else:
                 print("    Run not selected.")
 
