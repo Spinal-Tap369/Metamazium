@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from metamazium.snail_performer.cnn_encoder import CNNEncoder
-from metamazium.performer.performer_pytorch import SelfAttention
 
 # ScalarEncoder module 
 class ScalarEncoder(nn.Module):
@@ -58,7 +57,7 @@ class CombinedEncoder(nn.Module):
         combined = torch.cat([img_embed, scalar_embed], dim=1)  # shape: (B, 256+64)
         return F.relu(self.proj(combined))  # shape: (B, base_dim)
 
-
+# DenseBlock module (unchanged)
 class DenseBlock(nn.Module):
     def __init__(self, in_dim, dilation, filters):
         super().__init__()
@@ -73,6 +72,7 @@ class DenseBlock(nn.Module):
         act = torch.tanh(xf) * torch.sigmoid(xg)
         return torch.cat([x, act], dim=1)
 
+# TCBlock module (unchanged)
 class TCBlock(nn.Module):
     def __init__(self, in_dim, seq_len, filters):
         super().__init__()
@@ -91,49 +91,75 @@ class TCBlock(nn.Module):
             x = blk(x)
         return x
 
-class SnailSelfAttnBlock(nn.Module):
+# New Attention Block following SNAIL's paper
+class SnailAttentionBlock(nn.Module):
     """
-    Projects input (in_dim -> embed_dim), applies causal self-attention,
-    and concatenates the original input with the attention output.
+    Implements the attention block as described in the SNAIL paper:
+      - Applies separate linear layers to compute query, keys, and values.
+      - Computes scaled dot-product attention with a causal mask.
+      - Computes a "read" vector and concatenates it with the input.
     """
-    def __init__(self, in_dim, embed_dim, num_heads=1, dropout=0.0, local_heads=0):
+    def __init__(self, in_dim, key_size, value_size):
+        """
+        Args:
+            in_dim (int): Dimension of the input features.
+            key_size (int): Dimension of the key (and query) vectors.
+            value_size (int): Dimension of the value vectors.
+        """
         super().__init__()
-        self.in_dim = in_dim
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-
-        self.in_proj = nn.Linear(in_dim, embed_dim, bias=False)
-        self.attn = SelfAttention(
-            dim=embed_dim,
-            heads=num_heads,
-            dim_head=max(1, embed_dim // num_heads),
-            causal=True,
-            local_heads=local_heads,
-            dropout=dropout
-        )
-        self.out_dim = in_dim + embed_dim
+        self.linear_query = nn.Linear(in_dim, key_size)
+        self.linear_keys = nn.Linear(in_dim, key_size)
+        self.linear_values = nn.Linear(in_dim, value_size)
+        self.sqrt_key_size = math.sqrt(key_size)
+        # The output dimension is the concatenation of the input and the read vector.
+        self.out_dim = in_dim + value_size
 
     def forward(self, x):
-        # x: (B, in_dim, T)
+        """
+        Args:
+            x (Tensor): shape (B, in_dim, T)
+        Returns:
+            Tensor: shape (B, in_dim + value_size, T)
+        """
         B, C, T = x.shape
-        x_bt_c = x.permute(0, 2, 1)   # (B, T, C)
-        proj = self.in_proj(x_bt_c)   # (B, T, embed_dim)
-        attn_out = self.attn(proj)    # (B, T, embed_dim)
-        cat_bt = torch.cat([x_bt_c, attn_out], dim=-1)  # (B, T, C+embed_dim)
-        return cat_bt.permute(0, 2, 1).contiguous()      # (B, C+embed_dim, T)
+        # Permute to (B, T, in_dim) for linear layers.
+        x_bt = x.permute(0, 2, 1)  # (B, T, in_dim)
+        
+        # Compute queries, keys, and values.
+        query = self.linear_query(x_bt)   # (B, T, key_size)
+        keys = self.linear_keys(x_bt)       # (B, T, key_size)
+        values = self.linear_values(x_bt)   # (B, T, value_size)
+        
+        # Compute scaled dot-product attention.
+        logits = torch.bmm(query, keys.transpose(1, 2))  # (B, T, T)
+        logits = logits / self.sqrt_key_size
 
+        # Create a causal mask so that each timestep t can only attend to time steps <= t.
+        mask = torch.triu(torch.ones(T, T, device=x.device), diagonal=1).bool()
+        logits.masked_fill_(mask, -float('inf'))
+
+        # Compute attention weights.
+        attn_weights = F.softmax(logits, dim=-1)  # (B, T, T)
+        
+        # Compute the read vector.
+        read = torch.bmm(attn_weights, values)  # (B, T, value_size)
+        
+        # Concatenate the read vector with the original input.
+        out = torch.cat([x_bt, read], dim=-1)  # (B, T, in_dim + value_size)
+        
+        # Permute back to (B, out_dim, T)
+        return out.permute(0, 2, 1).contiguous()
+
+# SNAIL Policy & Value Network
 class SNAILPolicyValueNet(nn.Module):
     def __init__(
         self,
         action_dim=4,
         base_dim=256,
         policy_filters=32,
-        policy_attn_dim=16,
+        policy_attn_dim=16, 
         value_filters=16,
-        seq_len=800,
-        num_policy_attn=2,
-        nb_features=64,
-        num_heads=1
+        seq_len=800
     ):
         super().__init__()
         self.action_dim = action_dim
@@ -144,18 +170,16 @@ class SNAILPolicyValueNet(nn.Module):
 
         # Policy branch.
         self.policy_block1 = TCBlock(in_dim=base_dim, seq_len=seq_len, filters=policy_filters)
-        self.attn1 = SnailSelfAttnBlock(
+        self.attn1 = SnailAttentionBlock(
             in_dim=self.policy_block1.out_dim,
-            embed_dim=policy_attn_dim,
-            num_heads=num_heads,
-            local_heads=0    
+            key_size=policy_attn_dim,
+            value_size=policy_attn_dim
         )
         self.policy_block2 = TCBlock(in_dim=self.attn1.out_dim, seq_len=seq_len, filters=policy_filters)
-        self.attn2 = SnailSelfAttnBlock(
+        self.attn2 = SnailAttentionBlock(
             in_dim=self.policy_block2.out_dim,
-            embed_dim=policy_attn_dim,
-            num_heads=num_heads,
-            local_heads=0
+            key_size=policy_attn_dim,
+            value_size=policy_attn_dim
         )
         self.policy_out_dim = self.attn2.out_dim
         self.policy_head = nn.Conv1d(self.policy_out_dim, action_dim, kernel_size=1)
@@ -180,7 +204,7 @@ class SNAILPolicyValueNet(nn.Module):
         B, T, C, H, W = x.shape
         # Process each time-step independently:
         x2 = x.view(B * T, C, H, W)
-        # Get the base embedding using our CombinedEncoder.
+        # Get the base embedding using CombinedEncoder.
         feats = self.combined_encoder(x2)  # (B*T, base_dim)
         feats_1D = feats.view(B, T, self.base_dim).permute(0, 2, 1).contiguous()  # (B, base_dim, T)
 

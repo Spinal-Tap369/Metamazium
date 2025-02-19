@@ -139,10 +139,7 @@ def main(args=None):
         policy_filters=32,
         policy_attn_dim=16,
         value_filters=16,
-        seq_len=500,
-        num_policy_attn=2,
-        nb_features=64,
-        num_heads=1
+        seq_len=500
     ).to(device)
 
     trpo_trainer = TRPO_FO(
