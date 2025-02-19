@@ -60,7 +60,7 @@ def load_omniglot_train_test(root="omniglot", download=True):
 ##############################################
 # Episode Sampling (per episode)
 ##############################################
-def sample_episode(dataset, n_way=5, k_shot=1, device="cuda"):
+def sample_episode(dataset, n_way=5, k_shot=1, device="cpu"):
     """
     Sample an N-way, K-shot episode as described in the paper:
       - Randomly select N distinct classes.
@@ -106,7 +106,7 @@ def sample_episode(dataset, n_way=5, k_shot=1, device="cuda"):
 ##############################################
 # Batch Helper: Convert multiple episodes to a batch.
 ##############################################
-def batch_for_few_shot(dataset, n_way, k_shot, batch_size, device="cuda"):
+def batch_for_few_shot(dataset, n_way, k_shot, batch_size, device="cpu"):
     """
     Samples 'batch_size' episodes and stacks them into a batch.
     
@@ -135,7 +135,7 @@ def batch_for_few_shot(dataset, n_way, k_shot, batch_size, device="cuda"):
 ##############################################
 # Training Routine
 ##############################################
-def train_snail(epochs=100, iterations=10000, n_way=5, k_shot=1, batch_size=32, lr=1e-4, device="cuda"):
+def train_snail(epochs=100, iterations=10000, n_way=5, k_shot=1, batch_size=32, lr=1e-4, device="cpu"):
     """
     Train SNAILFewShot on Omniglot in a batched episodic manner.
     - Uses the precomputed omniglot90_train.pt and omniglot90_test.pt files.
@@ -212,7 +212,7 @@ def parse_args():
     parser.add_argument("--k_shot", type=int, default=1, help="K-shot support examples")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size (episodes per update)")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--device", type=str, default="cuda", help="Device to use: cpu or cuda")
+    parser.add_argument("--device", type=str, default="cpu", help="Device to use: cpu or cuda")
     args, unknown = parser.parse_known_args()  # This ignores any unknown arguments.
     return args
 
