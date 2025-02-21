@@ -213,14 +213,19 @@ def main(args=None):
             c4 = np.full((1, H, W), last_reward, dtype=np.float32)
             c5 = np.full((1, H, W), boundary_bit, dtype=np.float32)
             obs_6ch = np.concatenate([obs_img, c3, c4, c5], axis=0)
-            trial_states.append(obs_6ch)
+            trial_states.append(obs_6ch)  # accumulate every observation in the trial
 
-            with torch.no_grad():
-                obs_t = torch.from_numpy(obs_6ch[None, None]).float().to(device)
-                logits, val = policy_net.act_single_step(obs_t)
-                dist = torch.distributions.Categorical(logits=logits)
-                action = dist.sample()
-                log_prob = dist.log_prob(action)
+            #  action selection 
+            # Instead of feeding only the current observation, stack all collected observations.
+            trial_seq = np.stack(trial_states, axis=0)  # shape: (L, 6, H, W), where L is the current length of the trial
+            trial_seq = trial_seq[None, ...] 
+            obs_t = torch.from_numpy(trial_seq).float().to(device)
+            logits, val = policy_net.act_single_step(obs_t)
+            # ****************************************
+
+            dist = torch.distributions.Categorical(logits=logits)
+            action = dist.sample()
+            log_prob = dist.log_prob(action)
 
             obs_next, reward, done, truncated, info = env.step(action.item())
 

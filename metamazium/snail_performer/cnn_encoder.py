@@ -6,19 +6,18 @@ import torch.nn.functional as F
 
 class CNNEncoder(nn.Module):
     """
-    CNN encoder for input:
-      - When used standalone, it expects a 6-channel input (3 image channels + 3 scalar channels).
-      - When used in CombinedEncoder, it will be instantiated with 3 channels (only the image channels).
-    Projects input to a 256-dimensional embedding.
+    CNN encoder for images.
+    Preprocesses the image using the same convolutional architecture as Duan et al. (2016):
+      - Two layers with kernel size 5×5, 16 filters, stride 2, and ReLU nonlinearity,
+      - Followed by flattening and a fully-connected layer to produce a 256-dimensional feature vector.
+    
+    This module expects a 3-channel input.
     """
-    def __init__(self, in_channels=6):
+    def __init__(self, in_channels=3):
         super().__init__()
-        # Use the provided in_channels.
         self.conv1 = nn.Conv2d(in_channels, 16, kernel_size=5, stride=2)
         self.conv2 = nn.Conv2d(16, 16, kernel_size=5, stride=2)
-        # Use adaptive pooling to force a fixed spatial size.
         self.adaptive_pool = nn.AdaptiveAvgPool2d((5, 7))
-        # Fully connected layer; note: 16 * 5 * 7 = 560.
         self.fc = nn.Linear(16 * 5 * 7, 256)
 
     def forward(self, obs):
@@ -26,7 +25,7 @@ class CNNEncoder(nn.Module):
         Args:
             obs (Tensor): shape (B, in_channels, H, W)
         Returns:
-            Tensor: shape (B, 256) embedding of the input
+            Tensor: shape (B, 256) embedding of the image.
         """
         x = F.relu(self.conv1(obs))
         x = F.relu(self.conv2(x))
