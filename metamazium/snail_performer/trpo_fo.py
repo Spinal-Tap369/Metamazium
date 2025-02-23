@@ -8,15 +8,10 @@ import numpy as np
 from torch.distributions import Categorical, kl_divergence
 from torch.optim import Adam
 
-# Torch Utilities (Param-list based)
 def flatten_params(param_list):
-    """Flatten a list of parameters (Tensor) into a single 1D tensor."""
     return torch.cat([p.data.view(-1) for p in param_list])
 
 def unflatten_params(flat_tensor, param_list):
-    """
-    Unflatten a 1D tensor into a list of tensors with the same shapes as in param_list.
-    """
     idx = 0
     new_params = []
     for p in param_list:
@@ -27,17 +22,11 @@ def unflatten_params(flat_tensor, param_list):
     return new_params
 
 def set_params_flat(param_list, flat_params):
-    """
-    Set the given param_list Tensors using the data in flat_params (1D).
-    """
     new_tensors = unflatten_params(flat_params, param_list)
     for p, new_p in zip(param_list, new_tensors):
         p.data.copy_(new_p)
 
 def flat_grad(output, param_list, create_graph=False, retain_graph=False):
-    """
-    Compute and flatten gradients of output w.r.t. the parameters in param_list.
-    """
     grads = torch.autograd.grad(
         output, param_list,
         create_graph=create_graph,
@@ -52,44 +41,23 @@ def flat_grad(output, param_list, create_graph=False, retain_graph=False):
             out.append(g.reshape(-1))
     return torch.cat(out)
 
-# Backtracking Line Search
 def line_search(param_list, f, x, fullstep, expected_improve_rate, max_kl,
                 max_backtracks=10, accept_ratio=0.1):
-    """
-    Backtracking line search to satisfy improvement and KL constraints.
-    
-    param_list: parameters to update.
-    f: a callable that returns (loss, kl) (evaluated under no_grad).
-    x: initial flattened parameters.
-    fullstep: proposed update direction.
-    expected_improve_rate: expected improvement along fullstep.
-    max_kl: KL divergence constraint.
-    """
     for stepfrac in [0.5 ** n for n in range(max_backtracks)]:
         xnew = x + stepfrac * fullstep
         set_params_flat(param_list, xnew)
         with torch.no_grad():
             loss, kl = f()
-        actual_improve = -loss  # because loss is negative surrogate
+        actual_improve = -loss
         expected_improve = expected_improve_rate * stepfrac
         if (actual_improve / (expected_improve + 1e-8) > accept_ratio) and (kl < max_kl):
             return True, xnew
     return False, x
 
-# TRPO_FO Class (First-Order TRPO using only first-order gradients)
 class TRPO_FO:
     """
-    A first-order TRPO implementation that uses only the first-order gradient.
-    
-    It computes the surrogate loss and its gradient, then uses the negative gradient
-    as the update direction. A backtracking line search is performed to ensure that the KL divergence 
-    between the new and old policies is below a threshold.
-    
-    This approximates TRPO without computing the natural gradient (i.e. without using 
-    conjugate gradient and Hessian-vector products).
-    
-    References:
-        - TRPO: https://arxiv.org/abs/1502.05477
+    First-order TRPO implementation using full trial sequences (with masking for padded timesteps)
+    and without any dummy recurrent state.
     """
     def __init__(
         self,
@@ -134,26 +102,25 @@ class TRPO_FO:
             all_advantages.append(advs)
         return all_advantages
 
-    def update_policy(self, states, actions, advantages, old_log_probs):
-        """
-        Perform a first-order policy update.
-        """
+    def update_policy(self, states, actions, advantages, old_log_probs, mask):
+        # states: (B, T, 6, H, W); actions, advantages, old_log_probs, mask: (B, T)
         old_params = flatten_params(self.policy_params)
 
         def get_loss_kl():
-            dist = self._forward_dist(states)
-            log_prob = dist.log_prob(actions)
+            dist = self._forward_dist(states)  # dist.logits shape: (B, T, action_dim)
+            log_prob = dist.log_prob(actions)    # (B, T)
             ratio = torch.exp(log_prob - old_log_probs)
-            surr = ratio * advantages
-            loss = -surr.mean()  # minimize negative surrogate
+            surr = ratio * advantages * mask  # Only valid timesteps contribute
+            loss = -surr.sum() / mask.sum()
             with torch.no_grad():
                 dist_old = Categorical(logits=dist.logits.detach())
-            kl = torch.mean(kl_divergence(dist_old, dist))
+            kl_all = kl_divergence(dist_old, dist)  # (B, T)
+            kl = (kl_all * mask).sum() / mask.sum()
             return loss, kl
 
         loss_old, kl_old = get_loss_kl()
         grad = flat_grad(loss_old, self.policy_params, create_graph=False, retain_graph=False)
-        full_step = -grad  # first-order update direction
+        full_step = -grad
         exp_improve = -(grad * full_step).sum()
 
         def line_search_loss_kl():
@@ -178,30 +145,23 @@ class TRPO_FO:
 
         return (-final_loss, 0.0)
 
-    def update_value_fun(self, states, target_values):
+    def update_value_fun(self, states, target_values, mask):
         value_loss = 0.0
         for _ in range(self.vf_iters):
             self.value_optimizer.zero_grad()
-            predicted = self._forward_value(states).squeeze(-1)
-            loss = F.mse_loss(predicted, target_values)
+            predicted = self._forward_value(states).squeeze(-1)  # (B, T)
+            loss = F.mse_loss(predicted * mask, target_values * mask, reduction='sum') / mask.sum()
             loss.backward()
             self.value_optimizer.step()
             value_loss = loss.item()
         return value_loss
 
-    # ------------------- Internal Helpers ------------------- #
-
     def _forward_dist(self, states):
-        # If states already have 5 dimensions, do not unsqueeze.
         if states.dim() == 5:
             input_to_policy = states
         else:
             input_to_policy = states.unsqueeze(1)
-        logits, _, _ = self.policy.forward_with_state(
-            input_to_policy,
-            self._dummy_rnn_state(states.size(0))
-        )
-        # If an extra dimension was added, squeeze it.
+        logits, _, _ = self.policy.forward_with_state(input_to_policy)
         if logits.dim() == 4:
             logits = logits
         else:
@@ -213,16 +173,7 @@ class TRPO_FO:
             input_to_policy = states
         else:
             input_to_policy = states.unsqueeze(1)
-        _, values, _ = self.value_fun.forward_with_state(
-            input_to_policy,
-            self._dummy_rnn_state(states.size(0))
-        )
+        _, values, _ = self.value_fun.forward_with_state(input_to_policy)
         return values
 
-    def _dummy_rnn_state(self, batch_size):
-        num_layers = self.policy.num_layers
-        hidden_size = self.policy.hidden_size
-        device = next(self.policy.parameters()).device
-        h = torch.zeros(num_layers, batch_size, hidden_size, device=device)
-        c = torch.zeros(num_layers, batch_size, hidden_size, device=device)
-        return (h, c)
+

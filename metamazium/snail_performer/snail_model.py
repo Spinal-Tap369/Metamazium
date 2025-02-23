@@ -7,49 +7,37 @@ import torch.nn.functional as F
 
 from metamazium.snail_performer.cnn_encoder import CNNEncoder
 
-# Updated CombinedEncoder: only preprocess the image, then append the scalar signals.
+# CombinedEncoder remains unchanged.
 class CombinedEncoder(nn.Module):
     """
     Combined encoder that mirrors the paper:
       - Preprocesses only the image part (first 3 channels) using the CNN architecture from Duan et al. (2016)
-        (two convolutional layers with kernel size 5×5, 16 filters, stride 2, ReLU, flattened and passed through a FC layer
-         to produce a 256-dimensional feature vector).
-      - The remaining 3 channels (previous action, previous reward, termination/phase bit) are assumed to be constant
-        across spatial dimensions, so they are averaged over H and W to yield a 3-dimensional vector.
+      - The remaining 3 channels (previous action, previous reward, termination bit) are averaged over H and W.
       - The 256-d image embedding and the 3-d scalar vector are concatenated (resulting in 259 dimensions).
-      - Optionally, this combined vector can be projected (via a linear layer) back to 256 dimensions.
+      - Optionally, this combined vector can be projected (via a linear layer) back to a desired dimension.
     """
     def __init__(self, base_dim=256):
         super().__init__()
         self.cnn_encoder = CNNEncoder(in_channels=3)
-        # We now simply append the scalar inputs (3-d) without encoding.
-        # The concatenated dimension is 256 + 3 = 259.
+        # Concatenated dimension is 256+3=259.
         if base_dim != 259:
             self.proj = nn.Linear(259, base_dim)
         else:
             self.proj = None
 
     def forward(self, obs):
-        """
-        Args:
-            obs (Tensor): shape (B, 6, H, W)
-              - First 3 channels: image.
-              - Last 3 channels: scalar values (previous action, previous reward, termination bit).
-        Returns:
-            Tensor: shape (B, base_dim) embedding.
-        """
         image_part = obs[:, :3, :, :]   # shape: (B, 3, H, W)
         scalar_part = obs[:, 3:, :, :]   # shape: (B, 3, H, W)
         img_embed = self.cnn_encoder(image_part)  # (B, 256)
-        # Since scalar channels are constant spatially, average over H and W.
         scalar_vec = scalar_part.mean(dim=[2, 3])  # (B, 3)
-        combined = torch.cat([img_embed, scalar_vec], dim=1)  # (B, 256+3=259)
+        combined = torch.cat([img_embed, scalar_vec], dim=1)  # (B, 259)
         if self.proj is not None:
             return F.relu(self.proj(combined))
         else:
             return combined
 
-# (Keep DenseBlock, TCBlock, and SnailAttentionBlock as before.)
+# --- DenseBlock, TCBlock, SnailAttentionBlock definitions remain unchanged --- #
+
 class DenseBlock(nn.Module):
     def __init__(self, in_dim, dilation, filters):
         super().__init__()
@@ -105,7 +93,6 @@ class SnailAttentionBlock(nn.Module):
         out = torch.cat([x_bt, read], dim=-1)
         return out.permute(0, 2, 1).contiguous()
 
-# SNAIL Policy & Value Network updated to use the new CombinedEncoder.
 class SNAILPolicyValueNet(nn.Module):
     def __init__(
         self,
@@ -118,7 +105,6 @@ class SNAILPolicyValueNet(nn.Module):
     ):
         super().__init__()
         self.action_dim = action_dim
-        # Use the CombinedEncoder to process only the image from the observation.
         self.combined_encoder = CombinedEncoder(base_dim=base_dim)
         self.base_dim = base_dim
         self.seq_len = seq_len
@@ -145,21 +131,18 @@ class SNAILPolicyValueNet(nn.Module):
         self.value_out_dim = self.value_block2.out_dim
         self.value_head = nn.Conv1d(self.value_out_dim, 1, kernel_size=1)
 
-        # For TRPO_FO compatibility.
+        # For TRPO_FO compatibility
         self.num_layers = 1
         self.hidden_size = base_dim
 
     def forward(self, x):
         """
-        x: Tensor of shape (B, T, 6, H, W), where:
-           - Channels 0-2: image (observation).
-           - Channels 3-5: appended scalar signals (previous action, previous reward, termination bit).
+        x: Tensor of shape (B, T, 6, H, W)
         Returns:
             policy_logits: (B, T, action_dim)
             values: (B, T)
         """
         B, T, C, H, W = x.shape
-        # Process each timestep independently:
         x2 = x.view(B * T, C, H, W)
         feats = self.combined_encoder(x2)  # (B*T, base_dim)
         feats_1D = feats.view(B, T, self.base_dim).permute(0, 2, 1).contiguous()
@@ -184,11 +167,9 @@ class SNAILPolicyValueNet(nn.Module):
         logits, values = self.forward(x)
         return logits[:, -1, :], values[:, -1]
 
-    def forward_with_state(self, x, dummy_state):
+    def forward_with_state(self, x, dummy_state=None):
         logits, values = self.forward_rollout(x)
-        batch_size = x.size(0)
-        dummy = torch.zeros(1, batch_size, self.hidden_size, device=x.device)
-        return logits, values, (dummy, dummy)
+        return logits, values, None
 
     def policy_parameters(self):
         return list(self.parameters())
