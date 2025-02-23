@@ -27,7 +27,7 @@ def label_idx(dataset):
         label_index.setdefault(label, []).append(idx)
     return label_index
 
-def ep_sampler(label_index, dataset, n_way=5, k_shot=1, device="cpu"):
+def ep_sampler(label_index, dataset, n_way=5, k_shot=1, device="cuda"):
     """
     Samples a single N-way, K-shot episode.
     
@@ -66,7 +66,7 @@ def ep_sampler(label_index, dataset, n_way=5, k_shot=1, device="cpu"):
     
     return support_imgs, support_lbls, query_img, query_epi_label, query_label_dummy
 
-def batch_for_few_shot(label_index, dataset, n_way=5, k_shot=1, batch_size=16, device="cpu"):
+def batch_for_few_shot(label_index, dataset, n_way=5, k_shot=1, batch_size=16, device="cuda"):
     """
     Samples a batch of episodes.
     
@@ -96,7 +96,7 @@ def batch_for_few_shot(label_index, dataset, n_way=5, k_shot=1, batch_size=16, d
 # ---------------------------
 # Training Routine
 # ---------------------------
-def train_lstm_sl(epochs=50, iterations=100, n_way=5, k_shot=1, batch_size=16, lr=1e-4, device="cpu"):
+def train_lstm_sl(epochs=50, iterations=100, n_way=5, k_shot=1, batch_size=16, lr=1e-4, device="cuda"):
     transform = T.Compose([T.Resize((28,28)), T.ToTensor()])
     train_dataset = datasets.Omniglot(root="omniglot_data", background=True, download=True, transform=transform)
     test_dataset  = datasets.Omniglot(root="omniglot_data", background=False, download=True, transform=transform)
@@ -160,7 +160,7 @@ def parse_args():
     parser.add_argument("--k_shot", type=int, default=1, help="K-shot support examples")
     parser.add_argument("--batch_size", type=int, default=32, help="Episodes per batch")
     parser.add_argument("--lr", type=float, default=0.0001, help="Learning rate")
-    parser.add_argument("--device", type=str, default="cpu", help="Device: 'cpu' or 'cuda'")
+    parser.add_argument("--device", type=str, default="cuda", help="Device: 'cpu' or 'cuda'")
     args, unknown = parser.parse_known_args()
     return args
 
