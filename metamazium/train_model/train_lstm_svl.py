@@ -154,12 +154,12 @@ def train_lstm_sl(epochs=50, iterations=100, n_way=5, k_shot=1, batch_size=16, l
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train LSTM Few-Shot on Omniglot")
-    parser.add_argument("--epochs", type=int, default=270, help="Number of epochs")
-    parser.add_argument("--iterations", type=int, default=100, help="Iterations per epoch")
+    parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")
+    parser.add_argument("--iterations", type=int, default=10000, help="Iterations per epoch")
     parser.add_argument("--n_way", type=int, default=5, help="N-way classification")
     parser.add_argument("--k_shot", type=int, default=1, help="K-shot support examples")
     parser.add_argument("--batch_size", type=int, default=32, help="Episodes per batch")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=0.0001, help="Learning rate")
     parser.add_argument("--device", type=str, default="cpu", help="Device: 'cpu' or 'cuda'")
     args, unknown = parser.parse_known_args()
     return args
