@@ -83,7 +83,6 @@ class AttentionBlock(nn.Module):
         values = self.linear_values(x)  # (N, T, value_size)
         attn_logits = torch.bmm(query, keys.transpose(1, 2))  # (N, T, T)
         attn_logits.data.masked_fill_(mask, -float('inf'))
-        # Note: following the GitHub code, softmax is applied over dimension 1.
         attn = F.softmax(attn_logits / self.sqrt_key_size, dim=1)
         attn_out = torch.bmm(attn, values)  # (N, T, value_size)
         return torch.cat((x, attn_out), dim=2)  # (N, T, in_channels + value_size)
