@@ -8,6 +8,7 @@ import torch
 from tqdm import tqdm
 import argparse
 import random
+import gc  
 
 torch.autograd.set_detect_anomaly(False)
 
@@ -327,7 +328,9 @@ def main(args=None):
             replay_buffer.clear()
             steps_since_update = 0
             torch.cuda.empty_cache()
+            gc.collect()  # Force garbage collection after update
 
+    # Final update if any data remains.
     if steps_since_update >= 35:
         rollouts = []
         for data in replay_buffer:
@@ -369,6 +372,8 @@ def main(args=None):
               f"Avg Phase1 Reward: {avg_phase1_reward:.4f}, Avg Phase2 Reward: {avg_phase2_reward:.4f}")
         batch_update_count += 1
         save_checkpoint(policy_net, total_steps, CHECKPOINT_DIR, batch_update_count, LOAD_DIR, task_idx)
+        torch.cuda.empty_cache()
+        gc.collect()  # Force garbage collection after final update
 
     pbar.close()
     env.close()
